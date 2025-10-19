@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/trace.dir/src/main.cpp.o CMakeFiles/trace.dir/src/geom.cpp.o CMakeFiles/trace.dir/src/parser.cpp.o CMakeFiles/trace.dir/src/grid.cpp.o CMakeFiles/trace.dir/src/gate.cpp.o CMakeFiles/trace.dir/src/fdec.cpp.o CMakeFiles/trace.dir/src/io.cpp.o -o trace 
