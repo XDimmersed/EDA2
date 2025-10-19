@@ -159,20 +159,20 @@ struct PlannedLine {
   bool horizontal = false;
   i32 coord2 = 0;
   bool is_high = false;
-  i32 span_min = 0;
-  i32 span_max = 0;
+  i32 span_min2 = 0;
+  i32 span_max2 = 0;
 };
 
-bool intervals_overlap(i32 a0, i32 a1, i32 b0, i32 b1) {
+bool intervals_overlap2(i32 a0, i32 a1, i32 b0, i32 b1) {
   return std::max(a0, b0) < std::min(a1, b1);
 }
 
 void merge_planned_lines(std::vector<PlannedLine>& lines) {
   std::sort(lines.begin(), lines.end(), [](const PlannedLine& a, const PlannedLine& b) {
-    if(a.horizontal != b.horizontal) return b.horizontal < a.horizontal;
+    if(a.horizontal != b.horizontal) return a.horizontal < b.horizontal;
     if(a.coord2 != b.coord2) return a.coord2 < b.coord2;
-    if(a.span_min != b.span_min) return a.span_min < b.span_min;
-    return a.span_max < b.span_max;
+    if(a.span_min2 != b.span_min2) return a.span_min2 < b.span_min2;
+    return a.span_max2 < b.span_max2;
   });
 
   std::vector<PlannedLine> merged;
@@ -180,10 +180,10 @@ void merge_planned_lines(std::vector<PlannedLine>& lines) {
     if(!merged.empty() &&
        merged.back().horizontal == line.horizontal &&
        merged.back().coord2 == line.coord2 &&
-       intervals_overlap(merged.back().span_min, merged.back().span_max,
-                         line.span_min, line.span_max)) {
-      merged.back().span_min = std::min(merged.back().span_min, line.span_min);
-      merged.back().span_max = std::max(merged.back().span_max, line.span_max);
+       intervals_overlap2(merged.back().span_min2, merged.back().span_max2,
+                          line.span_min2, line.span_max2)) {
+      merged.back().span_min2 = std::min(merged.back().span_min2, line.span_min2);
+      merged.back().span_max2 = std::max(merged.back().span_max2, line.span_max2);
       merged.back().is_high = merged.back().is_high || line.is_high;
     } else {
       merged.push_back(line);
@@ -244,38 +244,56 @@ void GateCtx::compute_aa_plan(const Layout& L, u32 aa_pid) {
     tmp = clip_halfplane(tmp, true, aa.bb.maxy * 2, true);
     if(tmp.size() < 3) continue;
 
-    BBox inter_bb = {tmp[0].x2 / 2, tmp[0].y2 / 2, tmp[0].x2 / 2, tmp[0].y2 / 2};
-    for(const auto& p : tmp) {
-      inter_bb.minx = std::min(inter_bb.minx, p.x2 / 2);
-      inter_bb.maxx = std::max(inter_bb.maxx, p.x2 / 2);
-      inter_bb.miny = std::min(inter_bb.miny, p.y2 / 2);
-      inter_bb.maxy = std::max(inter_bb.maxy, p.y2 / 2);
-    }
+    i32 minx2 = tmp[0].x2;
+    i32 maxx2 = tmp[0].x2;
+    i32 miny2 = tmp[0].y2;
+    i32 maxy2 = tmp[0].y2;
+    bool touches_left = false;
+    bool touches_right = false;
+    bool touches_bottom = false;
+    bool touches_top = false;
 
-    bool touches_left = (inter_bb.minx <= aa.bb.minx);
-    bool touches_right = (inter_bb.maxx >= aa.bb.maxx);
-    bool touches_bottom = (inter_bb.miny <= aa.bb.miny);
-    bool touches_top = (inter_bb.maxy >= aa.bb.maxy);
+    const i32 left2 = aa.bb.minx * 2;
+    const i32 right2 = aa.bb.maxx * 2;
+    const i32 bottom2 = aa.bb.miny * 2;
+    const i32 top2 = aa.bb.maxy * 2;
+
+    for(const auto& p : tmp) {
+      minx2 = std::min(minx2, p.x2);
+      maxx2 = std::max(maxx2, p.x2);
+      miny2 = std::min(miny2, p.y2);
+      maxy2 = std::max(maxy2, p.y2);
+      if(p.x2 == left2) touches_left = true;
+      if(p.x2 == right2) touches_right = true;
+      if(p.y2 == bottom2) touches_bottom = true;
+      if(p.y2 == top2) touches_top = true;
+    }
 
     bool is_high = (poly_high[poly_pid] != 0);
 
-    if(touches_left && touches_right && inter_bb.maxy > inter_bb.miny) {
-      PlannedLine line;
-      line.horizontal = true;
-      line.coord2 = inter_bb.miny + inter_bb.maxy;
-      line.span_min = inter_bb.minx;
-      line.span_max = inter_bb.maxx;
-      line.is_high = is_high;
-      collected.push_back(line);
+    if(touches_left && touches_right && maxy2 > miny2) {
+      i32 coord2 = (minx2 + maxx2) / 2;
+      if(coord2 > left2 && coord2 < right2) {
+        PlannedLine line;
+        line.horizontal = false;
+        line.coord2 = coord2;
+        line.span_min2 = std::max(miny2, bottom2);
+        line.span_max2 = std::min(maxy2, top2);
+        line.is_high = is_high;
+        collected.push_back(line);
+      }
     }
-    if(touches_bottom && touches_top && inter_bb.maxx > inter_bb.minx) {
-      PlannedLine line;
-      line.horizontal = false;
-      line.coord2 = inter_bb.minx + inter_bb.maxx;
-      line.span_min = inter_bb.miny;
-      line.span_max = inter_bb.maxy;
-      line.is_high = is_high;
-      collected.push_back(line);
+    if(touches_bottom && touches_top && maxx2 > minx2) {
+      i32 coord2 = (miny2 + maxy2) / 2;
+      if(coord2 > bottom2 && coord2 < top2) {
+        PlannedLine line;
+        line.horizontal = true;
+        line.coord2 = coord2;
+        line.span_min2 = std::max(minx2, left2);
+        line.span_max2 = std::min(maxx2, right2);
+        line.is_high = is_high;
+        collected.push_back(line);
+      }
     }
   }
 
@@ -285,9 +303,9 @@ void GateCtx::compute_aa_plan(const Layout& L, u32 aa_pid) {
   plan.horizontal_lines.clear();
   for(const auto& line : collected) {
     if(line.horizontal) {
-      plan.horizontal_lines.push_back({line.coord2, line.is_high});
+      plan.horizontal_lines.push_back({line.coord2, line.is_high, line.span_min2, line.span_max2});
     } else {
-      plan.vertical_lines.push_back({line.coord2, line.is_high});
+      plan.vertical_lines.push_back({line.coord2, line.is_high, line.span_min2, line.span_max2});
     }
   }
   plan.computed = true;
@@ -311,8 +329,13 @@ static std::vector<PlannedLine> gather_planned_lines(const GateCtx::AAPlan& plan
     pl.horizontal = false;
     pl.coord2 = line.coord;
     pl.is_high = line.is_high;
-    pl.span_min = aa.bb.miny;
-    pl.span_max = aa.bb.maxy;
+    if(line.span_min2 < line.span_max2) {
+      pl.span_min2 = line.span_min2;
+      pl.span_max2 = line.span_max2;
+    } else {
+      pl.span_min2 = aa.bb.miny * 2;
+      pl.span_max2 = aa.bb.maxy * 2;
+    }
     lines.push_back(pl);
   }
   for(const auto& line : plan.horizontal_lines) {
@@ -320,8 +343,13 @@ static std::vector<PlannedLine> gather_planned_lines(const GateCtx::AAPlan& plan
     pl.horizontal = true;
     pl.coord2 = line.coord;
     pl.is_high = line.is_high;
-    pl.span_min = aa.bb.minx;
-    pl.span_max = aa.bb.maxx;
+    if(line.span_min2 < line.span_max2) {
+      pl.span_min2 = line.span_min2;
+      pl.span_max2 = line.span_max2;
+    } else {
+      pl.span_min2 = aa.bb.minx * 2;
+      pl.span_max2 = aa.bb.maxx * 2;
+    }
     lines.push_back(pl);
   }
   merge_planned_lines(lines);
@@ -352,12 +380,12 @@ void GateCtx::execute_cut(const Layout& L, u32 aa_pid) {
     next.reserve(pieces.size() * 2);
     for(const auto& piece : pieces) {
       if(line.horizontal) {
-        if(piece.bb.miny * 2 >= line.coord2 || piece.bb.maxy * 2 <= line.coord2) {
+        if(piece.bb.maxy * 2 <= line.coord2 || piece.bb.miny * 2 >= line.coord2) {
           next.push_back(piece);
           continue;
         }
       } else {
-        if(piece.bb.minx * 2 >= line.coord2 || piece.bb.maxx * 2 <= line.coord2) {
+        if(piece.bb.maxx * 2 <= line.coord2 || piece.bb.minx * 2 >= line.coord2) {
           next.push_back(piece);
           continue;
         }
@@ -387,16 +415,22 @@ void GateCtx::execute_cut(const Layout& L, u32 aa_pid) {
     std::vector<u32> side_b;
     for(u32 idx = 0; idx < slices.pieces.size(); ++idx) {
       const auto& p = slices.pieces[idx];
+      i32 proj_min2 = line.horizontal ? (p.bb.minx * 2) : (p.bb.miny * 2);
+      i32 proj_max2 = line.horizontal ? (p.bb.maxx * 2) : (p.bb.maxy * 2);
+      if(!intervals_overlap2(proj_min2, proj_max2, line.span_min2, line.span_max2)) {
+        continue;
+      }
+
       if(line.horizontal) {
-        if(p.bb.maxy * 2 == line.coord2) {
+        if(p.bb.maxy * 2 <= line.coord2) {
           side_a.push_back(idx);
-        } else if(p.bb.miny * 2 == line.coord2) {
+        } else if(p.bb.miny * 2 >= line.coord2) {
           side_b.push_back(idx);
         }
       } else {
-        if(p.bb.maxx * 2 == line.coord2) {
+        if(p.bb.maxx * 2 <= line.coord2) {
           side_a.push_back(idx);
-        } else if(p.bb.minx * 2 == line.coord2) {
+        } else if(p.bb.minx * 2 >= line.coord2) {
           side_b.push_back(idx);
         }
       }
@@ -408,13 +442,13 @@ void GateCtx::execute_cut(const Layout& L, u32 aa_pid) {
       for(u32 b : side_b) {
         const auto& pa = slices.pieces[a];
         const auto& pb = slices.pieces[b];
-        if(line.horizontal) {
-          if(!intervals_overlap(pa.bb.minx, pa.bb.maxx, pb.bb.minx, pb.bb.maxx)) continue;
-          if(!intervals_overlap(pa.bb.minx, pa.bb.maxx, line.span_min, line.span_max)) continue;
-        } else {
-          if(!intervals_overlap(pa.bb.miny, pa.bb.maxy, pb.bb.miny, pb.bb.maxy)) continue;
-          if(!intervals_overlap(pa.bb.miny, pa.bb.maxy, line.span_min, line.span_max)) continue;
-        }
+        i32 a_min2 = line.horizontal ? (pa.bb.minx * 2) : (pa.bb.miny * 2);
+        i32 a_max2 = line.horizontal ? (pa.bb.maxx * 2) : (pa.bb.maxy * 2);
+        i32 b_min2 = line.horizontal ? (pb.bb.minx * 2) : (pb.bb.miny * 2);
+        i32 b_max2 = line.horizontal ? (pb.bb.maxx * 2) : (pb.bb.maxy * 2);
+
+        if(!intervals_overlap2(a_min2, a_max2, b_min2, b_max2)) continue;
+        if(!intervals_overlap2(a_min2, a_max2, line.span_min2, line.span_max2)) continue;
         slices.adjacency[a].push_back(b);
         slices.adjacency[b].push_back(a);
       }

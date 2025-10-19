@@ -16,8 +16,10 @@ struct GateCtx {
   
   // 切割线定义
   struct CutLine {
-    i32 coord;      // x坐标（竖切）或y坐标（横切）
+    i32 coord;      // x坐标（竖切）或y坐标（横切），使用2×坐标
     bool is_high;   // 高电平（导通）还是低电平（断开）
+    i32 span_min2;  // 作用区间（另一维度）的下界，使用2×坐标
+    i32 span_max2;  // 作用区间（另一维度）的上界，使用2×坐标
   };
   
   // AA切割计划
