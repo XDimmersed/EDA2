@@ -79,7 +79,9 @@ void FDEC::expand_frontier_no_gate(u64 gid, std::queue<u64>& q,
   u32 lid = U.lid;
 
   // ---- A) 同层连通（必须考虑：面积重叠/边重合/角点接触均算连通） ----
-  {
+  // 若当前gid对应Gate切片，则同层扩张已由GateCtx维护，避免再次把原AA polygon入队，
+  // 否则后续跨层时会绕过Gate切割造成误导通。
+  if(!gate_ctx.is_slice_gid(gid)){
     std::vector<u32> cand; cand.reserve(128);
     grids[lid].query(U.bb, cand);
     std::sort(cand.begin(), cand.end());
@@ -186,6 +188,9 @@ std::vector<u64> FDEC::trace_with_gate() const{
     
     std::cerr << "Phase 1: visited " << visited1.size() << " polygons, marked " << poly_high_count << " poly as high\n";
   }
+
+  // s1 阶段后，切割计划依赖的 poly_high 已更新，需要清空缓存以便重新构建
+  gate_ctx.clear_cached_slices();
 
   // 阶段2：s2 BFS（命中 AA 时执行多次切割，并通过导通边扩展）
   auto s2 = R->seeds[1];
