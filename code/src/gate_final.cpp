@@ -2,532 +2,409 @@
 #include "geom.hpp"
 
 #include <algorithm>
-#include <utility>
-#include <iostream>
-#include <map>
-#include <set>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace {
 
-BBox bbox_intersection(const BBox& a, const BBox& b){
-  BBox r;
-  r.minx = std::max(a.minx, b.minx);
-  r.maxx = std::min(a.maxx, b.maxx);
-  r.miny = std::max(a.miny, b.miny);
-  r.maxy = std::min(a.maxy, b.maxy);
-  if(r.minx > r.maxx || r.miny > r.maxy){
-    r.minx=r.maxx=r.miny=r.maxy=0;
-  }
-  return r;
-}
-
-// 修复后的贯穿判据：真正检查Poly是否跨越AA的边界
-bool is_full_penetration(const Poly& poly, const Poly& aa) {
-  BBox intersection = bbox_intersection(poly.bb, aa.bb);
-  
-  // 如果交集为空，肯定不贯穿
-  if(intersection.minx >= intersection.maxx || intersection.miny >= intersection.maxy) {
-    return false;
-  }
-  
-  // 计算交集的面积和AA的面积
-  long long intersection_area = (long long)(intersection.maxx - intersection.minx) * 
-                               (long long)(intersection.maxy - intersection.miny);
-  long long aa_area = (long long)(aa.bb.maxx - aa.bb.minx) * 
-                     (long long)(aa.bb.maxy - aa.bb.miny);
-  
-  // 如果交集面积占AA面积的很大比例（>90%），认为完全贯穿
-  if(aa_area > 0 && intersection_area * 100 > aa_area * 90) {
-    return true;
-  }
-  
-  // 真正的贯穿：Poly必须跨越AA的边界
-  // 横向贯穿：Poly的y范围必须完全包含AA的y范围，且Poly在x方向上有延伸
-  bool horizontal_penetration = (poly.bb.miny <= aa.bb.miny && poly.bb.maxy >= aa.bb.maxy) &&
-                               (poly.bb.minx < aa.bb.minx || poly.bb.maxx > aa.bb.maxx);
-  
-  // 纵向贯穿：Poly的x范围必须完全包含AA的x范围，且Poly在y方向上有延伸
-  bool vertical_penetration = (poly.bb.minx <= aa.bb.minx && poly.bb.maxx >= aa.bb.maxx) &&
-                             (poly.bb.miny < aa.bb.miny || poly.bb.maxy > aa.bb.maxy);
-  
-  return horizontal_penetration || vertical_penetration;
-}
-
-// 完整的Sutherland-Hodgman裁剪算法，支持半格切线
-struct ClipResult {
-  std::vector<Pt> vertices;
-  bool is_valid;
-  
-  ClipResult() : is_valid(false) {}
-  ClipResult(std::vector<Pt> v) : vertices(std::move(v)), is_valid(vertices.size() >= 3) {}
+struct Rect {
+  i32 x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+  bool high = false;
 };
 
-// 完整的Sutherland-Hodgman裁剪，精确处理半格切线
-ClipResult sutherland_hodgman_clip(const std::vector<Pt>& subject, 
-                                   bool is_horizontal, 
-                                   i32 coord2, 
-                                   bool keep_lower) {
-  if(subject.size() < 3) return ClipResult();
-  
-  // 定义裁剪平面（在2×坐标空间）
-  auto inside = [&](const Pt& p) -> bool {
-    if(is_horizontal) {
-      return keep_lower ? (p.y * 2 < coord2) : (p.y * 2 >= coord2);
-    } else {
-      return keep_lower ? (p.x * 2 < coord2) : (p.x * 2 >= coord2);
-    }
-  };
-  
-  auto intersect = [&](const Pt& p1, const Pt& p2) -> Pt {
-    if(is_horizontal) {
-      // 横切：计算与y=coord2/2的交点
-      if(p1.y == p2.y) return p1; // 水平边
-      
-      // 在2×坐标空间计算交点
-      i32 y1_2 = p1.y * 2, y2_2 = p2.y * 2;
-      if(y1_2 == y2_2) return p1; // 水平边
-      
-      // 计算交点：x = x1 + (coord2 - y1_2) * (x2 - x1) / (y2_2 - y1_2)
-      long long x = p1.x + (long long)(coord2 - y1_2) * (p2.x - p1.x) / (y2_2 - y1_2);
-      i32 y = coord2 / 2; // 精确的y坐标
-      
-      return {(i32)x, y};
-    } else {
-      // 竖切：计算与x=coord2/2的交点
-      if(p1.x == p2.x) return p1; // 垂直边
-      
-      // 在2×坐标空间计算交点
-      i32 x1_2 = p1.x * 2, x2_2 = p2.x * 2;
-      if(x1_2 == x2_2) return p1; // 垂直边
-      
-      // 计算交点：y = y1 + (coord2 - x1_2) * (y2 - y1) / (x2_2 - x1_2)
-      long long y = p1.y + (long long)(coord2 - x1_2) * (p2.y - p1.y) / (x2_2 - x1_2);
-      i32 x = coord2 / 2; // 精确的x坐标
-      
-      return {x, (i32)y};
-    }
-  };
-  
-  std::vector<Pt> result;
-  
-  if(subject.empty()) return ClipResult();
-  
-  Pt s = subject.back();
-  for(const Pt& e : subject) {
-    if(inside(e)) {
-      if(!inside(s)) {
-        result.push_back(intersect(s, e));
-      }
-      result.push_back(e);
-    } else if(inside(s)) {
-      result.push_back(intersect(s, e));
-    }
-    s = e;
+struct Boundary {
+  bool open = false;
+  bool blocked = false;
+  void mark(bool is_high) {
+    if(is_high) open = true;
+    else blocked = true;
   }
-  
-  // 去重相邻的重复点
-  if(!result.empty()) {
-    std::vector<Pt> deduped;
-    deduped.push_back(result[0]);
-    for(size_t i = 1; i < result.size(); ++i) {
-      if(result[i].x != result[i-1].x || result[i].y != result[i-1].y) {
-        deduped.push_back(result[i]);
-      }
-    }
-    result = std::move(deduped);
-  }
-  
-  // 强制闭环：确保首尾点相同
-  if(!result.empty() && (result[0].x != result.back().x || result[0].y != result.back().y)) {
-    result.push_back(result[0]);
-  }
-  
-  return ClipResult(result);
+};
+
+Poly make_rect_poly(const Poly& base, i32 x0, i32 y0, i32 x1, i32 y1) {
+  Poly out;
+  out.lid = base.lid;
+  out.bb = {x0, y0, x1, y1};
+  out.v = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
+  out.H = { { {x0, y0}, {x1, y0} }, { {x1, y1}, {x0, y1} } };
+  out.V = { { {x1, y0}, {x1, y1} }, { {x0, y1}, {x0, y0} } };
+  return out;
 }
 
-// 规范化多边形：确保CCW，重建H/V边数组，更新bbox
-void normalize_polygon(Poly& poly) {
-  if(poly.v.size() < 3) return;
-  
-  // 确保逆时针
-  ensure_ccw(poly.v);
-  
-  // 重建H/V边数组
+struct CellRect {
+  i32 x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+};
+
+struct PointKey {
+  i32 x = 0, y = 0;
+  bool operator==(const PointKey& o) const { return x == o.x && y == o.y; }
+  bool operator<(const PointKey& o) const {
+    if(y != o.y) return y < o.y;
+    return x < o.x;
+  }
+};
+
+struct PointKeyHash {
+  size_t operator()(const PointKey& p) const {
+    return (static_cast<size_t>(p.x) << 32) ^ static_cast<size_t>(p.y);
+  }
+};
+
+struct EdgeKey {
+  PointKey a;
+  PointKey b;
+  bool operator==(const EdgeKey& o) const { return a.x == o.a.x && a.y == o.a.y && b.x == o.b.x && b.y == o.b.y; }
+};
+
+struct EdgeKeyHash {
+  size_t operator()(const EdgeKey& e) const {
+    return PointKeyHash{}(e.a) ^ (PointKeyHash{}(e.b) << 1);
+  }
+};
+
+void add_edge(std::unordered_map<EdgeKey, int, EdgeKeyHash>& edges, const PointKey& a, const PointKey& b) {
+  EdgeKey rev{b, a};
+  auto it = edges.find(rev);
+  if(it != edges.end()) {
+    if(--(it->second) == 0) edges.erase(it);
+    return;
+  }
+  EdgeKey key{a, b};
+  ++edges[key];
+}
+
+void rebuild_edges(Poly& poly) {
+  poly.bb = bbox_of(poly.v);
   poly.H.clear();
   poly.V.clear();
-  
-  for(size_t i = 0; i < poly.v.size(); ++i) {
-    const Pt& p1 = poly.v[i];
-    const Pt& p2 = poly.v[(i + 1) % poly.v.size()];
-    
-    if(p1.y == p2.y) {
-      // 水平边
-      poly.H.push_back({p1, p2});
-    } else if(p1.x == p2.x) {
-      // 垂直边
-      poly.V.push_back({p1, p2});
-    }
+  size_t n = poly.v.size();
+  if(n == 0) return;
+  for(size_t i = 0; i < n; ++i) {
+    const Pt& a = poly.v[i];
+    const Pt& b = poly.v[(i + 1) % n];
+    if(a.y == b.y) poly.H.push_back({a, b});
+    else if(a.x == b.x) poly.V.push_back({a, b});
   }
-  
-  // 更新bbox
-  poly.bb = bbox_of(poly.v);
-}
-
-// 切割结果结构，包含左右/上下片段和导通信息
-struct CutResult {
-  std::vector<Poly> pieces;
-  std::vector<std::vector<u32>> adjacency; // 导通边
-  bool is_high; // 是否高电平导通
-  
-  CutResult() : is_high(false) {}
-};
-
-// 改进的切割函数，在切割时就建立导通关系
-CutResult cut_polygon_with_adjacency(const Poly& original, 
-                                     bool is_horizontal, 
-                                     i32 coord2, 
-                                     bool is_high) {
-  CutResult result;
-  result.is_high = is_high;
-  
-  if(original.v.size() < 3) return result;
-  
-  // 使用改进的Sutherland-Hodgman裁剪
-  auto left_result = sutherland_hodgman_clip(original.v, is_horizontal, coord2, true);
-  auto right_result = sutherland_hodgman_clip(original.v, is_horizontal, coord2, false);
-  
-  if(left_result.is_valid) {
-    Poly left_piece;
-    left_piece.v = std::move(left_result.vertices);
-    left_piece.lid = original.lid;
-    normalize_polygon(left_piece);
-    result.pieces.push_back(std::move(left_piece));
-  }
-  
-  if(right_result.is_valid) {
-    Poly right_piece;
-    right_piece.v = std::move(right_result.vertices);
-    right_piece.lid = original.lid;
-    normalize_polygon(right_piece);
-    result.pieces.push_back(std::move(right_piece));
-  }
-  
-  // 如果高电平且有两个片段，建立导通边
-  if(is_high && result.pieces.size() == 2) {
-    result.adjacency.resize(2);
-    result.adjacency[0].push_back(1);
-    result.adjacency[1].push_back(0);
-  }
-  
-  return result;
 }
 
 } // namespace
 
-void GateCtx::build_candidates(const Layout& L, int cell_hint){
+void GateCtx::build_candidates(const Layout& L, int cell_hint) {
   if(poly_lid >= L.layers.size() || aa_lid >= L.layers.size()) return;
-  
+
   const auto& poly_layer = L.layers[poly_lid];
   const auto& aa_layer = L.layers[aa_lid];
-  
+
   poly_high.assign(poly_layer.polys.size(), 0);
   poly_to_aa_cands.assign(poly_layer.polys.size(), {});
   aa_to_poly_cands.assign(aa_layer.polys.size(), {});
-  
-  // 构建网格
+
   poly_grid = Grid::build(poly_layer.polys, cell_hint);
   aa_grid = Grid::build(aa_layer.polys, cell_hint);
-  
-  // 建立候选关系
-  for(u32 poly_pid = 0; poly_pid < poly_layer.polys.size(); ++poly_pid) {
-    const auto& poly = poly_layer.polys[poly_pid];
-    std::vector<u32> candidates;
-    aa_grid.query(poly.bb, candidates);
-    
-    for(u32 aa_pid : candidates) {
-      const auto& aa = aa_layer.polys[aa_pid];
-      if(bbox_overlap(poly.bb, aa.bb)) {
-        poly_to_aa_cands[poly_pid].push_back(aa_pid);
-        aa_to_poly_cands[aa_pid].push_back(poly_pid);
-      }
+
+  for(u32 aa_pid = 0; aa_pid < aa_layer.polys.size(); ++aa_pid) {
+    const auto& AA = aa_layer.polys[aa_pid];
+    std::vector<u32> cands;
+    poly_grid.query(AA.bb, cands);
+    std::sort(cands.begin(), cands.end());
+    cands.erase(std::unique(cands.begin(), cands.end()), cands.end());
+    for(u32 poly_pid : cands) {
+      if(poly_pid >= poly_layer.polys.size()) continue;
+      const auto& P = poly_layer.polys[poly_pid];
+      if(!bbox_overlap(AA.bb, P.bb)) continue;
+      if(!poly_intersect_manhattan(AA, P)) continue;
+      poly_to_aa_cands[poly_pid].push_back(aa_pid);
+      aa_to_poly_cands[aa_pid].push_back(poly_pid);
     }
   }
 }
 
-void GateCtx::compute_aa_plan(const Layout& L, u32 aa_pid) {
-  if(aa_pid >= L.layers[aa_lid].polys.size()) return;
-  
-  auto& plan = aa_plans[aa_pid];
-  if(plan.computed) return;
-  
-  const auto& aa = L.layers[aa_lid].polys[aa_pid];
-  plan.vertical_lines.clear();
-  plan.horizontal_lines.clear();
-  
-  // 使用map来合并同坐标的切线，高优先级覆盖低
-  std::map<i32, bool> vertical_cuts, horizontal_cuts;
-  
-  // 收集所有高电平Poly的贯穿线
-  for(u32 poly_pid : aa_to_poly_cands[aa_pid]) {
-    if(poly_pid >= poly_high.size() || !poly_high[poly_pid]) continue;
-    
-    const auto& poly = L.layers[poly_lid].polys[poly_pid];
-    if(!is_full_penetration(poly, aa)) continue;
-    
-    BBox intersection = bbox_intersection(poly.bb, aa.bb);
-    
-    // 检查横向贯穿
-    if(intersection.miny <= aa.bb.miny && intersection.maxy >= aa.bb.maxy) {
-      // 使用中线作为切割线
-      i32 y_cut = (intersection.miny + intersection.maxy) / 2;
-      horizontal_cuts[y_cut * 2] = true; // 高电平
-    }
-    
-    // 检查纵向贯穿
-    if(intersection.minx <= aa.bb.minx && intersection.maxx >= aa.bb.maxx) {
-      // 使用中线作为切割线
-      i32 x_cut = (intersection.minx + intersection.maxx) / 2;
-      vertical_cuts[x_cut * 2] = true; // 高电平
-    }
-  }
-  
-  // 转换为排序的向量
-  for(const auto& [coord, is_high] : vertical_cuts) {
-    plan.vertical_lines.push_back({coord, is_high});
-  }
-  for(const auto& [coord, is_high] : horizontal_cuts) {
-    plan.horizontal_lines.push_back({coord, is_high});
-  }
-  
-  plan.computed = true;
+void GateCtx::compute_aa_plan(const Layout&, u32 aa_pid) {
+  aa_plans[aa_pid].computed = true;
 }
 
 void GateCtx::execute_cut(const Layout& L, u32 aa_pid) {
   if(aa_pid >= L.layers[aa_lid].polys.size()) return;
-  
   auto& slices = aa_slices[aa_pid];
   if(slices.ready) return;
-  
-  compute_aa_plan(L, aa_pid);
-  const auto& plan = aa_plans[aa_pid];
-  
-  if(plan.vertical_lines.empty() && plan.horizontal_lines.empty()) {
-    // 没有切割线，保持原样
-    slices.pieces.push_back(L.layers[aa_lid].polys[aa_pid]);
-    slices.adjacency.resize(1);
+
+  const Poly& AA = L.layers[aa_lid].polys[aa_pid];
+
+  std::vector<i32> xs = {AA.bb.minx, AA.bb.maxx};
+  std::vector<i32> ys = {AA.bb.miny, AA.bb.maxy};
+  std::vector<Rect> rects;
+
+  for(u32 poly_pid : aa_to_poly_cands[aa_pid]) {
+    if(poly_pid >= L.layers[poly_lid].polys.size()) continue;
+    const Poly& P = L.layers[poly_lid].polys[poly_pid];
+    if(!bbox_overlap(AA.bb, P.bb)) continue;
+    if(!poly_intersect_manhattan(AA, P)) continue;
+    i32 x0 = std::max(AA.bb.minx, P.bb.minx);
+    i32 x1 = std::min(AA.bb.maxx, P.bb.maxx);
+    i32 y0 = std::max(AA.bb.miny, P.bb.miny);
+    i32 y1 = std::min(AA.bb.maxy, P.bb.maxy);
+    if(x0 >= x1 || y0 >= y1) continue;
+    Rect r;
+    r.x0 = x0; r.x1 = x1; r.y0 = y0; r.y1 = y1;
+    r.high = (poly_pid < poly_high.size() && poly_high[poly_pid]);
+    rects.push_back(r);
+    xs.push_back(x0); xs.push_back(x1);
+    ys.push_back(y0); ys.push_back(y1);
+  }
+
+  std::sort(xs.begin(), xs.end());
+  xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+  std::sort(ys.begin(), ys.end());
+  ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
+
+  int nx = std::max<int>(xs.size() - 1, 0);
+  int ny = std::max<int>(ys.size() - 1, 0);
+
+  if(nx <= 0 || ny <= 0) {
+    Poly piece = AA;
+    piece.pid = 0;
+    piece.gid = make_slice_gid(aa_pid, 0);
+    slices.pieces = {piece};
+    slices.adjacency.assign(1, {});
     slices.ready = true;
     return;
   }
-  
-  // 开始切割
-  std::vector<Poly> current_pieces = {L.layers[aa_lid].polys[aa_pid]};
-  std::vector<std::vector<u32>> current_adjacency = {{}};
-  
-  // 先竖切
-  for(const auto& line : plan.vertical_lines) {
-    std::vector<Poly> new_pieces;
-    std::vector<std::vector<u32>> new_adjacency;
-    
-    // 建立旧索引到新索引的映射
-    std::vector<u32> old_to_new_mapping(current_pieces.size(), UINT32_MAX);
-    
-    for(size_t i = 0; i < current_pieces.size(); ++i) {
-      const auto& piece = current_pieces[i];
-      
-      if(piece.bb.minx * 2 < line.coord && line.coord < piece.bb.maxx * 2) {
-        // 需要切割
-        auto cut_result = cut_polygon_with_adjacency(piece, false, line.coord, line.is_high);
-        
-        if(cut_result.pieces.size() == 2) {
-          // 成功切割成两片
-          size_t left_idx = new_pieces.size();
-          size_t right_idx = new_pieces.size() + 1;
-          
-          new_pieces.push_back(std::move(cut_result.pieces[0]));
-          new_pieces.push_back(std::move(cut_result.pieces[1]));
-          
-          // 建立导通边
-          new_adjacency.resize(new_pieces.size());
-          if(cut_result.is_high) {
-            new_adjacency[left_idx].push_back(right_idx);
-            new_adjacency[right_idx].push_back(left_idx);
-          }
-          
-          // 记录映射关系：原片段i被分割为left_idx和right_idx
-          old_to_new_mapping[i] = left_idx; // 使用left_idx作为主要映射
-          
-          // 继承原片段的邻接关系 - 延迟处理，避免越界
-          // 这里先记录需要建立的邻接关系，稍后统一处理
-        } else {
-          // 切割失败，保持原样
-          size_t new_idx = new_pieces.size();
-          new_pieces.push_back(piece);
-          new_adjacency.resize(new_pieces.size());
-          new_adjacency[new_idx] = current_adjacency[i];
-          old_to_new_mapping[i] = new_idx;
-        }
-      } else {
-        // 不需要切割
-        size_t new_idx = new_pieces.size();
-        new_pieces.push_back(piece);
-        new_adjacency.resize(new_pieces.size());
-        new_adjacency[new_idx] = current_adjacency[i];
-        old_to_new_mapping[i] = new_idx;
+
+  size_t vertical_count = (nx > 1) ? (size_t)(nx - 1) * ny : 0;
+  size_t horizontal_count = (ny > 1) ? (size_t)nx * (ny - 1) : 0;
+  std::vector<Boundary> vertical(vertical_count);
+  std::vector<Boundary> horizontal(horizontal_count);
+
+  auto mark_vertical = [&](int bx, int iy, bool high) {
+    if(nx <= 1) return;
+    if(bx <= 0 || bx >= (int)xs.size()) return;
+    Boundary& b = vertical[(size_t)(bx - 1) * ny + iy];
+    b.mark(high);
+  };
+  auto mark_horizontal = [&](int ix, int by, bool high) {
+    if(ny <= 1) return;
+    if(by <= 0 || by >= (int)ys.size()) return;
+    Boundary& b = horizontal[(size_t)ix * (ny - 1) + (by - 1)];
+    b.mark(high);
+  };
+
+  for(const auto& r : rects) {
+    int ix0 = std::lower_bound(xs.begin(), xs.end(), r.x0) - xs.begin();
+    int ix1 = std::lower_bound(xs.begin(), xs.end(), r.x1) - xs.begin();
+    int iy0 = std::lower_bound(ys.begin(), ys.end(), r.y0) - ys.begin();
+    int iy1 = std::lower_bound(ys.begin(), ys.end(), r.y1) - ys.begin();
+    bool high = r.high;
+
+    int bL = std::max(1, ix0);
+    int bR = std::min((int)xs.size() - 2, ix1);
+    for(int bx = bL; bx <= bR; ++bx) {
+      for(int iy = iy0; iy < iy1; ++iy) {
+        mark_vertical(bx, iy, high);
       }
     }
-    
-    // 现在安全地建立邻接关系
-    for(size_t i = 0; i < current_pieces.size(); ++i) {
-      if(old_to_new_mapping[i] == UINT32_MAX) continue;
-      
-      const auto& piece = current_pieces[i];
-      
-      if(piece.bb.minx * 2 < line.coord && line.coord < piece.bb.maxx * 2) {
-        // 这个片段被切割了
-        auto cut_result = cut_polygon_with_adjacency(piece, false, line.coord, line.is_high);
-        
-        if(cut_result.pieces.size() == 2) {
-          size_t left_idx = old_to_new_mapping[i];
-          size_t right_idx = left_idx + 1;
-          
-          // 继承原片段的邻接关系
-          for(u32 old_neighbor : current_adjacency[i]) {
-            if(old_to_new_mapping[old_neighbor] != UINT32_MAX) {
-              u32 new_neighbor = old_to_new_mapping[old_neighbor];
-              new_adjacency[left_idx].push_back(new_neighbor);
-              new_adjacency[new_neighbor].push_back(left_idx);
-              new_adjacency[right_idx].push_back(new_neighbor);
-              new_adjacency[new_neighbor].push_back(right_idx);
-            }
-          }
-        }
+
+    int bB = std::max(1, iy0);
+    int bT = std::min((int)ys.size() - 2, iy1);
+    for(int by = bB; by <= bT; ++by) {
+      for(int ix = ix0; ix < ix1; ++ix) {
+        mark_horizontal(ix, by, high);
       }
     }
-    
-    current_pieces = std::move(new_pieces);
-    current_adjacency = std::move(new_adjacency);
   }
-  
-  // 再横切
-  for(const auto& line : plan.horizontal_lines) {
-    std::vector<Poly> new_pieces;
-    std::vector<std::vector<u32>> new_adjacency;
-    
-    // 建立旧索引到新索引的映射
-    std::vector<u32> old_to_new_mapping(current_pieces.size(), UINT32_MAX);
-    
-    for(size_t i = 0; i < current_pieces.size(); ++i) {
-      const auto& piece = current_pieces[i];
-      
-      if(piece.bb.miny * 2 < line.coord && line.coord < piece.bb.maxy * 2) {
-        // 需要切割
-        auto cut_result = cut_polygon_with_adjacency(piece, true, line.coord, line.is_high);
-        
-        if(cut_result.pieces.size() == 2) {
-          // 成功切割成两片
-          size_t lower_idx = new_pieces.size();
-          size_t upper_idx = new_pieces.size() + 1;
-          
-          new_pieces.push_back(std::move(cut_result.pieces[0]));
-          new_pieces.push_back(std::move(cut_result.pieces[1]));
-          
-          // 建立导通边
-          new_adjacency.resize(new_pieces.size());
-          if(cut_result.is_high) {
-            new_adjacency[lower_idx].push_back(upper_idx);
-            new_adjacency[upper_idx].push_back(lower_idx);
-          }
-          
-          // 记录映射关系：原片段i被分割为lower_idx和upper_idx
-          old_to_new_mapping[i] = lower_idx; // 使用lower_idx作为主要映射
-          
-          // 继承原片段的邻接关系 - 延迟处理，避免越界
-          // 这里先记录需要建立的邻接关系，稍后统一处理
-        } else {
-          // 切割失败，保持原样
-          size_t new_idx = new_pieces.size();
-          new_pieces.push_back(piece);
-          new_adjacency.resize(new_pieces.size());
-          new_adjacency[new_idx] = current_adjacency[i];
-          old_to_new_mapping[i] = new_idx;
-        }
-      } else {
-        // 不需要切割
-        size_t new_idx = new_pieces.size();
-        new_pieces.push_back(piece);
-        new_adjacency.resize(new_pieces.size());
-        new_adjacency[new_idx] = current_adjacency[i];
-        old_to_new_mapping[i] = new_idx;
-      }
+
+  auto idx = [&](int ix, int iy) { return ix * ny + iy; };
+
+  std::vector<CellRect> cells;
+  cells.reserve((size_t)nx * ny);
+  for(int ix = 0; ix < nx; ++ix) {
+    for(int iy = 0; iy < ny; ++iy) {
+      CellRect cell;
+      cell.x0 = xs[ix]; cell.x1 = xs[ix + 1];
+      cell.y0 = ys[iy]; cell.y1 = ys[iy + 1];
+      cells.push_back(cell);
     }
-    
-    // 现在安全地建立邻接关系
-    for(size_t i = 0; i < current_pieces.size(); ++i) {
-      if(old_to_new_mapping[i] == UINT32_MAX) continue;
-      
-      const auto& piece = current_pieces[i];
-      
-      if(piece.bb.miny * 2 < line.coord && line.coord < piece.bb.maxy * 2) {
-        // 这个片段被切割了
-        auto cut_result = cut_polygon_with_adjacency(piece, true, line.coord, line.is_high);
-        
-        if(cut_result.pieces.size() == 2) {
-          size_t lower_idx = old_to_new_mapping[i];
-          size_t upper_idx = lower_idx + 1;
-          
-          // 继承原片段的邻接关系
-          for(u32 old_neighbor : current_adjacency[i]) {
-            if(old_to_new_mapping[old_neighbor] != UINT32_MAX) {
-              u32 new_neighbor = old_to_new_mapping[old_neighbor];
-              new_adjacency[lower_idx].push_back(new_neighbor);
-              new_adjacency[new_neighbor].push_back(lower_idx);
-              new_adjacency[upper_idx].push_back(new_neighbor);
-              new_adjacency[new_neighbor].push_back(upper_idx);
-            }
-          }
-        }
-      }
-    }
-    
-    current_pieces = std::move(new_pieces);
-    current_adjacency = std::move(new_adjacency);
   }
-  
-  // 保存结果
-  slices.pieces = std::move(current_pieces);
-  slices.adjacency = std::move(current_adjacency);
+
+  std::vector<std::vector<int>> adjacency_cells(cells.size());
+  for(int ix = 0; ix < nx; ++ix) {
+    for(int iy = 0; iy < ny; ++iy) {
+      int u = idx(ix, iy);
+      if(nx > 1 && ix + 1 < nx) {
+        int bx = ix + 1;
+        const Boundary& b = vertical[(size_t)(bx - 1) * ny + iy];
+        if(b.open || !b.blocked) {
+          int v = idx(ix + 1, iy);
+          adjacency_cells[u].push_back(v);
+          adjacency_cells[v].push_back(u);
+        }
+      }
+      if(ny > 1 && iy + 1 < ny) {
+        int by = iy + 1;
+        const Boundary& b = horizontal[(size_t)ix * (ny - 1) + (by - 1)];
+        if(b.open || !b.blocked) {
+          int v = idx(ix, iy + 1);
+          adjacency_cells[u].push_back(v);
+          adjacency_cells[v].push_back(u);
+        }
+      }
+    }
+  }
+
+  for(auto& nbrs : adjacency_cells) {
+    std::sort(nbrs.begin(), nbrs.end());
+    nbrs.erase(std::unique(nbrs.begin(), nbrs.end()), nbrs.end());
+  }
+
+  std::vector<int> comp_id(cells.size(), -1);
+  std::vector<std::vector<int>> components;
+  for(size_t i = 0; i < cells.size(); ++i) {
+    if(comp_id[i] != -1) continue;
+    std::vector<int> comp;
+    std::queue<int> qq;
+    comp_id[i] = components.size();
+    qq.push((int)i);
+    while(!qq.empty()) {
+      int u = qq.front(); qq.pop();
+      comp.push_back(u);
+      for(int v : adjacency_cells[u]) {
+        if(comp_id[v] != -1) continue;
+        comp_id[v] = comp_id[i];
+        qq.push(v);
+      }
+    }
+    components.push_back(std::move(comp));
+  }
+
+  std::vector<Poly> comp_polys;
+  comp_polys.reserve(components.size());
+  for(const auto& comp : components) {
+    std::unordered_map<EdgeKey, int, EdgeKeyHash> edges;
+    for(int idx_cell : comp) {
+      const CellRect& c = cells[idx_cell];
+      PointKey a{c.x0, c.y0};
+      PointKey b{c.x1, c.y0};
+      PointKey c1{c.x1, c.y1};
+      PointKey d{c.x0, c.y1};
+      add_edge(edges, a, b);
+      add_edge(edges, b, c1);
+      add_edge(edges, c1, d);
+      add_edge(edges, d, a);
+    }
+
+    if(edges.empty()) continue;
+
+    std::unordered_map<PointKey, PointKey, PointKeyHash> next_map;
+    PointKey start{};
+    bool start_set = false;
+    for(const auto& kv : edges) {
+      if(kv.second <= 0) continue;
+      next_map[kv.first.a] = kv.first.b;
+      if(!start_set || kv.first.a < start) {
+        start = kv.first.a;
+        start_set = true;
+      }
+    }
+    if(!start_set) continue;
+
+    std::vector<Pt> poly_pts;
+    PointKey cur = start;
+    do {
+      poly_pts.push_back({cur.x, cur.y});
+      auto it = next_map.find(cur);
+      if(it == next_map.end()) break;
+      cur = it->second;
+    } while(cur.x != start.x || cur.y != start.y);
+
+    if(poly_pts.size() < 3) continue;
+
+    Poly poly;
+    poly.lid = AA.lid;
+    poly.v = std::move(poly_pts);
+    rebuild_edges(poly);
+    comp_polys.push_back(std::move(poly));
+  }
+
+  for(size_t i = 0; i < comp_polys.size(); ++i) {
+    comp_polys[i].pid = i;
+    comp_polys[i].gid = make_slice_gid(aa_pid, (u32)i);
+  }
+
+  slices.pieces = std::move(comp_polys);
+  slices.adjacency.assign(slices.pieces.size(), {});
   slices.ready = true;
 }
 
-void GateCtx::enqueue_entry_slices_from(u64 u_gid, u32 aa_pid, 
-                                        std::queue<u64>& q, 
+void GateCtx::enqueue_entry_slices_from(u64 u_gid, u32 aa_pid,
+                                        std::queue<u64>& q,
                                         std::unordered_set<u64>& vis,
                                         const Layout& L) const {
-  if(aa_pid >= L.layers[aa_lid].polys.size()) return;
-  
   auto it = aa_slices.find(aa_pid);
   if(it == aa_slices.end() || !it->second.ready) return;
-  
-  const auto& slices = it->second;
-  const auto& u_poly = L.layers[gid_lid(u_gid)].polys[gid_pid(u_gid)];
-  
-  // 找到与u_poly相交的片段
-  for(size_t i = 0; i < slices.pieces.size(); ++i) {
-    const auto& slice = slices.pieces[i];
-    if(bbox_overlap(u_poly.bb, slice.bb) && poly_intersect_manhattan(u_poly, slice)) {
-      u64 slice_gid = make_slice_gid(aa_pid, i);
-      if(vis.find(slice_gid) == vis.end()) {
-        vis.insert(slice_gid);
-        q.push(slice_gid);
-        
-        // 沿导通边扩展
-        for(u32 neighbor_idx : slices.adjacency[i]) {
-          u64 neighbor_gid = make_slice_gid(aa_pid, neighbor_idx);
-          if(vis.find(neighbor_gid) == vis.end()) {
-            vis.insert(neighbor_gid);
-            q.push(neighbor_gid);
-          }
-        }
+
+  const auto& S = it->second;
+  const auto& pieces = S.pieces;
+
+  const Poly* source = nullptr;
+  if(is_slice_gid(u_gid)) {
+    source = slice_from_gid(u_gid);
+  } else {
+    u32 lid = gid_lid(u_gid);
+    u32 pid = gid_pid(u_gid);
+    if(lid < L.layers.size() && pid < L.layers[lid].polys.size()) {
+      source = &L.layers[lid].polys[pid];
+    }
+  }
+  if(!source) return;
+
+  std::vector<int> entries;
+  for(size_t i = 0; i < pieces.size(); ++i) {
+    if(!bbox_overlap(pieces[i].bb, source->bb)) continue;
+    if(poly_intersect_manhattan(pieces[i], *source)) {
+      entries.push_back((int)i);
+    }
+  }
+
+  if(entries.empty()) {
+    long long best = -1;
+    int best_idx = -1;
+    for(size_t i = 0; i < pieces.size(); ++i) {
+      i32 minx = std::max(pieces[i].bb.minx, source->bb.minx);
+      i32 maxx = std::min(pieces[i].bb.maxx, source->bb.maxx);
+      i32 miny = std::max(pieces[i].bb.miny, source->bb.miny);
+      i32 maxy = std::min(pieces[i].bb.maxy, source->bb.maxy);
+      long long area = (long long)std::max(0, maxx - minx) * std::max(0, maxy - miny);
+      if(area > best) {
+        best = area;
+        best_idx = (int)i;
+      }
+    }
+    if(best_idx >= 0) entries.push_back(best_idx);
+  }
+
+  std::queue<int> iq;
+  std::vector<char> seen(pieces.size(), 0);
+
+  for(int idx : entries) {
+    u64 gid = make_slice_gid(aa_pid, idx);
+    if(vis.insert(gid).second) {
+      q.push(gid);
+      iq.push(idx);
+      seen[idx] = 1;
+    }
+  }
+
+  while(!iq.empty()) {
+    int u = iq.front(); iq.pop();
+    if(u >= (int)S.adjacency.size()) continue;
+    for(u32 v : S.adjacency[u]) {
+      if(v >= pieces.size()) continue;
+      if(seen[v]) continue;
+      u64 gid = make_slice_gid(aa_pid, v);
+      if(vis.insert(gid).second) {
+        q.push(gid);
+        iq.push((int)v);
+        seen[v] = 1;
       }
     }
   }

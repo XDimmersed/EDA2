@@ -13,7 +13,7 @@ add_executable(trace
   src/geom.cpp
   src/parser.cpp
   src/grid.cpp
-  src/gate_new_gpt.cpp
+  src/gate_final.cpp
   src/fdec.cpp
   src/io.cpp
 )
