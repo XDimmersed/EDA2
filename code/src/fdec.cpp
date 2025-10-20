@@ -204,7 +204,7 @@ std::vector<u64> FDEC::trace_with_gate() const{
   std::queue<u64> q2;
   std::vector<u64> out; out.reserve(1<<20);
   
-  int aa_cut_count = 0, total_pieces = 0;
+  int total_pieces = 0;
 
   u64 g2 = make_gid(lid2,pid2);
   visited2.insert(g2); q2.push(g2);
@@ -222,27 +222,20 @@ std::vector<u64> FDEC::trace_with_gate() const{
       continue;
     }
 
-    // 统计切割数量
-    u32 lid = gid_lid(u), pid = gid_pid(u);
-    if(lid == gate_ctx.aa_lid) {
-      auto it_slices = gate_ctx.aa_slices.find(pid);
-      if(it_slices != gate_ctx.aa_slices.end() && it_slices->second.ready) {
-        if(it_slices->second.pieces.size() > 1) {
-          aa_cut_count++;
-        }
-      }
-    }
-
     // 其他层的正常处理
     out.push_back(u);
     expand_frontier_no_gate(u, q2, visited2);
   }
-  
+
   // 统计有多少片段没被访问
+  int aa_cut_count = 0;
   int total_generated_pieces = 0;
   for(const auto& [aa_pid, slices] : gate_ctx.aa_slices) {
     if(slices.ready) {
       total_generated_pieces += slices.pieces.size();
+      if(slices.pieces.size() > 1) {
+        aa_cut_count++;
+      }
     }
   }
   

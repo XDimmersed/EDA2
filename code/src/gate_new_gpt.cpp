@@ -272,18 +272,6 @@ void GateCtx::compute_aa_plan(const Layout& L, u32 aa_pid) {
     bool is_high = (poly_high[poly_pid] != 0);
 
     if(touches_left && touches_right && maxy2 > miny2) {
-      i32 coord2 = (minx2 + maxx2) / 2;
-      if(coord2 > left2 && coord2 < right2) {
-        PlannedLine line;
-        line.horizontal = false;
-        line.coord2 = coord2;
-        line.span_min2 = std::max(miny2, bottom2);
-        line.span_max2 = std::min(maxy2, top2);
-        line.is_high = is_high;
-        collected.push_back(line);
-      }
-    }
-    if(touches_bottom && touches_top && maxx2 > minx2) {
       i32 coord2 = (miny2 + maxy2) / 2;
       if(coord2 > bottom2 && coord2 < top2) {
         PlannedLine line;
@@ -291,6 +279,18 @@ void GateCtx::compute_aa_plan(const Layout& L, u32 aa_pid) {
         line.coord2 = coord2;
         line.span_min2 = std::max(minx2, left2);
         line.span_max2 = std::min(maxx2, right2);
+        line.is_high = is_high;
+        collected.push_back(line);
+      }
+    }
+    if(touches_bottom && touches_top && maxx2 > minx2) {
+      i32 coord2 = (minx2 + maxx2) / 2;
+      if(coord2 > left2 && coord2 < right2) {
+        PlannedLine line;
+        line.horizontal = false;
+        line.coord2 = coord2;
+        line.span_min2 = std::max(miny2, bottom2);
+        line.span_max2 = std::min(maxy2, top2);
         line.is_high = is_high;
         collected.push_back(line);
       }
