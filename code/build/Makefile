@@ -129,6 +129,30 @@ trace/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/trace.dir/build.make CMakeFiles/trace.dir/build
 .PHONY : trace/fast
 
+src/equiv_class.o: src/equiv_class.cpp.o
+.PHONY : src/equiv_class.o
+
+# target to build an object file
+src/equiv_class.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/trace.dir/build.make CMakeFiles/trace.dir/src/equiv_class.cpp.o
+.PHONY : src/equiv_class.cpp.o
+
+src/equiv_class.i: src/equiv_class.cpp.i
+.PHONY : src/equiv_class.i
+
+# target to preprocess a source file
+src/equiv_class.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/trace.dir/build.make CMakeFiles/trace.dir/src/equiv_class.cpp.i
+.PHONY : src/equiv_class.cpp.i
+
+src/equiv_class.s: src/equiv_class.cpp.s
+.PHONY : src/equiv_class.s
+
+# target to generate assembly for a file
+src/equiv_class.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/trace.dir/build.make CMakeFiles/trace.dir/src/equiv_class.cpp.s
+.PHONY : src/equiv_class.cpp.s
+
 src/fdec.o: src/fdec.cpp.o
 .PHONY : src/fdec.o
 
@@ -330,6 +354,9 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... trace"
+	@echo "... src/equiv_class.o"
+	@echo "... src/equiv_class.i"
+	@echo "... src/equiv_class.s"
 	@echo "... src/fdec.o"
 	@echo "... src/fdec.i"
 	@echo "... src/fdec.s"

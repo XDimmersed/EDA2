@@ -21,6 +21,10 @@ static const Poly* resolve_poly(const Layout& L, const GateCtx* gate, u64 gid){
 struct PolyKey {
   u64 h1, h2;
   bool operator==(const PolyKey& o) const { return h1 == o.h1 && h2 == o.h2; }
+  bool operator<(const PolyKey& o) const {
+    if(h1 != o.h1) return h1 < o.h1;
+    return h2 < o.h2;
+  }
 };
 
 struct PolyHasher {
@@ -143,10 +147,10 @@ void write_result(const Layout& L, const std::vector<u64>& reachable, const Gate
     size_t dropped = dropped_by_layer[layer.lid];
     if(slices > 0 || origs > 0 || dropped > 0) {
       size_t total_before_dedup = slices + origs + dropped;
-      std::cerr << layer.name << ": slices=" << slices 
-                << " + original=" << origs 
+      std::cerr << layer.name << ": slices=" << slices
+                << " + original=" << origs
                 << " - dropped=" << dropped
-                << " = " << (slices + origs) 
+                << " = " << (slices + origs)
                 << " (去重率=" << (total_before_dedup > 0 ? dropped*100/total_before_dedup : 0) << "%)\n";
     }
   }
@@ -158,7 +162,7 @@ void write_result(const Layout& L, const std::vector<u64>& reachable, const Gate
     std::sort(vec.begin(), vec.end());
     vec.erase(std::unique(vec.begin(), vec.end()), vec.end());
   }
-
+  
   std::ofstream fout(out_path);
   for(const auto& layer : L.layers){
     auto it = layer_gids.find(layer.lid);
@@ -166,7 +170,7 @@ void write_result(const Layout& L, const std::vector<u64>& reachable, const Gate
     fout << layer.name << "\n";
     for(u64 gid : it->second){
       const Poly* poly = resolve_poly(L, gate, gid);
-      if(!poly || poly->v.size()<3) continue;
+      if(!poly) continue;
       for(size_t i=0;i<poly->v.size();++i){
         fout << "(" << poly->v[i].x << "," << poly->v[i].y << ")";
         if(i+1<poly->v.size()) fout << ",";
@@ -174,4 +178,66 @@ void write_result(const Layout& L, const std::vector<u64>& reachable, const Gate
       fout << "\n";
     }
   }
+}
+
+// 诊断输入数据的几何重复情况（在任何BFS之前调用）
+void analyze_input_duplicates(const Layout& L) {
+  std::cerr << "\n" << std::string(80, '=') << "\n";
+  std::cerr << "输入数据几何重复分析（BFS前）\n";
+  std::cerr << std::string(80, '=') << "\n\n";
+  
+  size_t total_all = 0;
+  size_t unique_all = 0;
+  size_t dups_all = 0;
+  
+  for(const auto& layer : L.layers) {
+    // 统计每个几何形状出现的次数
+    std::unordered_map<PolyKey, std::vector<u32>, PolyHasher> geo_to_pids;
+    
+    for(const auto& poly : layer.polys) {
+      PolyKey key = canonical_hash(poly.v);
+      geo_to_pids[key].push_back(poly.pid);
+    }
+    
+    size_t total = layer.polys.size();
+    size_t unique = geo_to_pids.size();
+    size_t dups = total - unique;
+    
+    total_all += total;
+    unique_all += unique;
+    dups_all += dups;
+    
+    double dup_rate = total > 0 ? (dups * 100.0 / total) : 0.0;
+    
+    std::cerr << layer.name << ":\n";
+    std::cerr << "  总数: " << total << "\n";
+    std::cerr << "  唯一几何: " << unique << "\n";
+    std::cerr << "  重复几何: " << dups << " (" << dup_rate << "%)\n";
+    
+    // 找出重复最多的几何形状（top 3）
+    if(dups > 0) {
+      std::vector<std::pair<size_t, PolyKey>> counts;
+      for(const auto& kv : geo_to_pids) {
+        if(kv.second.size() > 1) {
+          counts.push_back({kv.second.size(), kv.first});
+        }
+      }
+      
+      std::sort(counts.begin(), counts.end(), std::greater<>());
+      
+      std::cerr << "  重复最多的几何形状:\n";
+      for(size_t i = 0; i < std::min(size_t(3), counts.size()); ++i) {
+        std::cerr << "    #" << (i+1) << ": 出现" << counts[i].first << "次\n";
+      }
+    }
+    std::cerr << "\n";
+  }
+  
+  std::cerr << std::string(80, '-') << "\n";
+  std::cerr << "全局统计:\n";
+  std::cerr << "  总多边形数: " << total_all << "\n";
+  std::cerr << "  唯一几何数: " << unique_all << "\n";
+  std::cerr << "  重复几何数: " << dups_all << " (" 
+            << (total_all > 0 ? (dups_all * 100.0 / total_all) : 0.0) << "%)\n";
+  std::cerr << std::string(80, '=') << "\n\n";
 }

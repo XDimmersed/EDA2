@@ -1,4 +1,6 @@
 file(REMOVE_RECURSE
+  "CMakeFiles/trace.dir/src/equiv_class.cpp.o"
+  "CMakeFiles/trace.dir/src/equiv_class.cpp.o.d"
   "CMakeFiles/trace.dir/src/fdec.cpp.o"
   "CMakeFiles/trace.dir/src/fdec.cpp.o.d"
   "CMakeFiles/trace.dir/src/gate.cpp.o"

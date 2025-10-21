@@ -17,5 +17,6 @@ add_executable(trace
   src/fdec.cpp
   src/io.cpp
   src/metrics.cpp
+  src/equiv_class.cpp
 )
 target_include_directories(trace PRIVATE include)

@@ -1,6 +1,7 @@
 #include "parser.hpp"
 #include "fdec.hpp"
 #include "io.hpp"
+#include "equiv_class.hpp"
 #include <iostream>
 
 int main(int argc, char** argv){
@@ -26,6 +27,20 @@ int main(int argc, char** argv){
 
   // std::cerr << "Parsed " << L.layers.size() << " layers, " << R.seeds.size() << " seeds\n";
   // std::cerr << "Has gate: " << (R.has_gate ? "yes" : "no") << "\n";
+
+  // 诊断输入数据的几何重复（在任何BFS之前）
+  analyze_input_duplicates(L);
+
+  // 构建等价类（预扫描）
+  EquivClassManager eqv_mgr;
+  u32 aa_lid = UINT32_MAX, poly_lid = UINT32_MAX;
+  if(R.has_gate) {
+    auto it1 = L.name2lid.find(R.poly_layer_name);
+    auto it2 = L.name2lid.find(R.aa_layer_name);
+    if(it1 != L.name2lid.end()) poly_lid = it1->second;
+    if(it2 != L.name2lid.end()) aa_lid = it2->second;
+  }
+  eqv_mgr.build_classes(&L, aa_lid, poly_lid);
 
   FDEC eng; eng.build(L, R, cfg);
 

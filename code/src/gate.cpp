@@ -44,12 +44,24 @@ BBox bbox_intersection(const BBox& a, const BBox& b) {
   return r;
 }
 
+// 计算曼哈顿多边形的面积（Shoelace公式）
+int64_t compute_polygon_area(const std::vector<Pt>& v) {
+  if(v.size() < 3) return 0;
+  int64_t area2 = 0;  // 2倍面积
+  for(size_t i = 0; i < v.size(); ++i) {
+    const auto& p1 = v[i];
+    const auto& p2 = v[(i + 1) % v.size()];
+    area2 += (int64_t)p1.x * p2.y - (int64_t)p2.x * p1.y;
+  }
+  return std::abs(area2) / 2;
+}
+
 // ============================================================================
-// 核心判据：交集触边法（Gate∩AA的交集是否触及AA的两条相对边界）
-// 几何切割与电平无关：所有贯穿的AA都要切，高/低电平只影响切后导通性
+// 核心判据：简单宽松判定（只要有实质性相交就切割）
+// 几何切割与电平无关：所有相交的AA都要切，高/低电平只影响切后导通性
 // ============================================================================
 PenetrationType check_penetration(const Poly& gate, const Poly& aa) {
-  // 步骤1：快速排除无重叠的情况
+  // 步骤1：bbox预筛
   if(!bbox_overlap(gate.bb, aa.bb)) {
     return PenetrationType::NONE;
   }
@@ -65,34 +77,28 @@ PenetrationType check_penetration(const Poly& gate, const Poly& aa) {
     return PenetrationType::NONE;  // 无有效交集
   }
   
-  // 步骤3：检查交集是否触及AA的两条相对边界（容差化触边判定）
-  // 改进2：去掉百分比阈值，仅保留极小数值容差，按题意"相交即贯穿"
-  const i32 tol = 1;  // 极小容差，仅用于数值误差
+  // 步骤3：简单判定 - 只要有实质性相交就切割
+  i32 I_width = I.maxx - I.minx;
+  i32 I_height = I.maxy - I.miny;
   
-  // 纵向贯穿：交集I触及AA的上边界(top)和下边界(bottom) → 生成竖切线
-  bool touch_top    = (I.maxy >= aa.bb.maxy - tol);
-  bool touch_bottom = (I.miny <= aa.bb.miny + tol);
+  // 最小相交阈值（避免擦边误切）
+  const i32 min_intersection = 2;
   
-  // 横向贯穿：交集I触及AA的左边界(left)和右边界(right) → 生成横切线
-  bool touch_left   = (I.minx <= aa.bb.minx + tol);
-  bool touch_right  = (I.maxx >= aa.bb.maxx - tol);
-  
-  // 判断贯穿类型
-  bool vert_penetrate = (touch_top && touch_bottom);
-  bool horiz_penetrate = (touch_left && touch_right);
-  
-  if(vert_penetrate && horiz_penetrate) {
-    // PO大幅覆盖AA，按AA宽高择"短边方向"为切向
-    i32 aa_width = aa.bb.maxx - aa.bb.minx;
-    i32 aa_height = aa.bb.maxy - aa.bb.miny;
-    return (aa_width < aa_height) ? PenetrationType::VERT : PenetrationType::HORIZ;
-  } else if(vert_penetrate) {
-    return PenetrationType::VERT;   // 纵向贯穿：Gate从上到下贯穿AA
-  } else if(horiz_penetrate) {
-    return PenetrationType::HORIZ;  // 横向贯穿：Gate从左到右贯穿AA
+  if(I_width < min_intersection || I_height < min_intersection) {
+    return PenetrationType::NONE;  // 交集太小，视为擦边
   }
   
-  return PenetrationType::NONE;
+  // 决定切割方向：根据Gate的形状选择
+  i32 gate_width = gate.bb.maxx - gate.bb.minx;
+  i32 gate_height = gate.bb.maxy - gate.bb.miny;
+  
+  // 如果Gate是竖长的（高>宽），用垂直切割
+  // 如果Gate是横长的（宽>高），用水平切割
+  if(gate_height > gate_width) {
+    return PenetrationType::VERT;
+  } else {
+    return PenetrationType::HORIZ;
+  }
 }
 
 // ============================================================================
@@ -470,10 +476,20 @@ static void connect_by_vertical_line(
   
   if(!line.is_high) return;  // 只有高电平线才建立导通
   
-  const i32 tol = 4;  // 放宽容差以适应数值误差
-  i32 coord = line.coord;
-  i32 y_min = line.span_min2;
-  i32 y_max = line.span_max2;
+  static int call_count = 0;
+  call_count++;
+  bool debug = (call_count <= 5);  // 只调试前5次调用
+  
+  const i32 tol = 10;  // 放宽容差从4到10，允许更大的对齐误差
+  // 重要：line的坐标是2x空间，需要转换为1x空间来匹配pieces的bbox
+  i32 coord = line.coord / 2;
+  i32 y_min = line.span_min2 / 2;
+  i32 y_max = line.span_max2 / 2;
+  
+  if(debug) {
+    std::cerr << "[connect_by_vertical_line #" << call_count << "] coord=" << coord 
+              << " (2x=" << line.coord << ") y_range=[" << y_min << "," << y_max << "] pieces=" << pieces.size() << "\n";
+  }
   
   std::vector<u32> left_pieces, right_pieces;
   
@@ -484,35 +500,48 @@ static void connect_by_vertical_line(
     bool touches_line = (bb.minx <= coord + tol && bb.maxx >= coord - tol);
     if(!touches_line) continue;
     
-    // 检查y方向是否有重叠
+    // 检查y方向是否有重叠（接触也算，放宽判定）
     i32 y_overlap_min = std::max(bb.miny, y_min);
     i32 y_overlap_max = std::min(bb.maxy, y_max);
-    if(y_overlap_max <= y_overlap_min) continue;
+    if(y_overlap_max < y_overlap_min - tol) continue;  // 改为允许接触
     
     // 判断片段在切割线的左侧还是右侧
     if(bb.maxx <= coord + tol) {
       left_pieces.push_back(i);
+      if(debug) std::cerr << "  piece[" << i << "] on LEFT, bbox=[" << bb.minx << "," << bb.miny << "," << bb.maxx << "," << bb.maxy << "]\n";
     } else if(bb.minx >= coord - tol) {
       right_pieces.push_back(i);
+      if(debug) std::cerr << "  piece[" << i << "] on RIGHT, bbox=[" << bb.minx << "," << bb.miny << "," << bb.maxx << "," << bb.maxy << "]\n";
     }
   }
   
+  if(debug) {
+    std::cerr << "  Found " << left_pieces.size() << " left pieces, " << right_pieces.size() << " right pieces\n";
+  }
+  
   // 连接左右两侧y区间重叠的片段对
+  int connections_made = 0;
   for(u32 li : left_pieces) {
     for(u32 ri : right_pieces) {
       const auto& lbb = pieces[li].bb;
       const auto& rbb = pieces[ri].bb;
       
-      // 检查y区间是否重叠
+      // 检查y区间是否重叠（接触也算，放宽判定）
       i32 y_overlap_min = std::max(lbb.miny, rbb.miny);
       i32 y_overlap_max = std::min(lbb.maxy, rbb.maxy);
       
-      if(y_overlap_max > y_overlap_min) {
+      if(y_overlap_max >= y_overlap_min - tol) {  // 改为允许接触
         // 建立双向边
         adjacency[li].push_back(ri);
         adjacency[ri].push_back(li);
+        connections_made++;
+        if(debug) std::cerr << "  Connected piece[" << li << "] <-> piece[" << ri << "]\n";
       }
     }
+  }
+  
+  if(debug) {
+    std::cerr << "  Total connections made: " << connections_made << "\n";
   }
 }
 
@@ -524,10 +553,11 @@ static void connect_by_horizontal_line(
   
   if(!line.is_high) return;  // 只有高电平线才建立导通
   
-  const i32 tol = 4;
-  i32 coord = line.coord;
-  i32 x_min = line.span_min2;
-  i32 x_max = line.span_max2;
+  const i32 tol = 10;  // 放宽容差从4到10，允许更大的对齐误差
+  // 重要：line的坐标是2x空间，需要转换为1x空间来匹配pieces的bbox
+  i32 coord = line.coord / 2;
+  i32 x_min = line.span_min2 / 2;
+  i32 x_max = line.span_max2 / 2;
   
   std::vector<u32> bottom_pieces, top_pieces;
   
@@ -538,10 +568,10 @@ static void connect_by_horizontal_line(
     bool touches_line = (bb.miny <= coord + tol && bb.maxy >= coord - tol);
     if(!touches_line) continue;
     
-    // 检查x方向是否有重叠
+    // 检查x方向是否有重叠（接触也算，放宽判定）
     i32 x_overlap_min = std::max(bb.minx, x_min);
     i32 x_overlap_max = std::min(bb.maxx, x_max);
-    if(x_overlap_max <= x_overlap_min) continue;
+    if(x_overlap_max < x_overlap_min - tol) continue;  // 改为允许接触
     
     // 判断片段在切割线的下方还是上方
     if(bb.maxy <= coord + tol) {
@@ -557,11 +587,11 @@ static void connect_by_horizontal_line(
       const auto& bbb = pieces[bi].bb;
       const auto& tbb = pieces[ti].bb;
       
-      // 检查x区间是否重叠
+      // 检查x区间是否重叠（接触也算，放宽判定）
       i32 x_overlap_min = std::max(bbb.minx, tbb.minx);
       i32 x_overlap_max = std::min(bbb.maxx, tbb.maxx);
       
-      if(x_overlap_max > x_overlap_min) {
+      if(x_overlap_max >= x_overlap_min - tol) {  // 改为允许接触
         // 建立双向边
         adjacency[bi].push_back(ti);
         adjacency[ti].push_back(bi);
@@ -751,6 +781,28 @@ void GateCtx::execute_cut(const Layout& L, u32 aa_pid) {
   
   const auto& plan = aa_plans[aa_pid];
   const auto& aa = L.layers[aa_lid].polys[aa_pid];
+  
+  // 调试特定AA
+  bool debug_this_aa = (aa_pid == 26584);
+  if(debug_this_aa) {
+    std::cerr << "\n=== 调试AA pid=" << aa_pid << " ===\n";
+    std::cerr << "AA bbox: [" << aa.bb.minx << "," << aa.bb.miny << "] 到 [" 
+              << aa.bb.maxx << "," << aa.bb.maxy << "]\n";
+    std::cerr << "切割线数量: vert=" << plan.vertical_lines.size() 
+              << ", horiz=" << plan.horizontal_lines.size() << "\n";
+    for(size_t i = 0; i < plan.vertical_lines.size(); i++) {
+      const auto& vl = plan.vertical_lines[i];
+      std::cerr << "  竖线#" << i << ": x=" << vl.coord/2 << " (2x=" << vl.coord 
+                << "), y∈[" << vl.span_min2/2 << "," << vl.span_max2/2 << "], "
+                << (vl.is_high ? "高电平" : "低电平") << "\n";
+    }
+    for(size_t i = 0; i < plan.horizontal_lines.size(); i++) {
+      const auto& hl = plan.horizontal_lines[i];
+      std::cerr << "  横线#" << i << ": y=" << hl.coord/2 << " (2x=" << hl.coord 
+                << "), x∈[" << hl.span_min2/2 << "," << hl.span_max2/2 << "], "
+                << (hl.is_high ? "高电平" : "低电平") << "\n";
+    }
+  }
 
   // 如果没有切割线，返回原始AA
   if(plan.vertical_lines.empty() && plan.horizontal_lines.empty()) {
@@ -805,12 +857,6 @@ void GateCtx::execute_cut(const Layout& L, u32 aa_pid) {
         
         // 记录映射：旧piece[i] -> {left_id, right_id}
         new_old_to_new.push_back({left_id, right_id});
-        
-        // 立即建立邻接（如果是高电平）
-        if(vline.is_high) {
-          // 这两个片段相邻且导通
-          // 暂时存储，稍后统一建立邻接表
-        }
       } else if(has_left) {
         u32 new_id = new_pieces.size();
         new_pieces.push_back(piece);
@@ -922,16 +968,41 @@ void GateCtx::execute_cut(const Layout& L, u32 aa_pid) {
   }
   int actual_edges = total_adj_entries / 2;
   
-  if(first_aa && pieces.size() > 1) {
+  // 统计切线分布（前10个AA）
+  static int aa_count = 0;
+  aa_count++;
+  
+  if(aa_count <= 10 && pieces.size() > 1) {
     // 统计高电平切割线数量
-    int high_vlines = 0, high_hlines = 0;
-    for(const auto& vl : plan.vertical_lines) if(vl.is_high) high_vlines++;
-    for(const auto& hl : plan.horizontal_lines) if(hl.is_high) high_hlines++;
+    int high_vlines = 0, low_vlines = 0;
+    int high_hlines = 0, low_hlines = 0;
+    for(const auto& vl : plan.vertical_lines) {
+      if(vl.is_high) high_vlines++;
+      else low_vlines++;
+    }
+    for(const auto& hl : plan.horizontal_lines) {
+      if(hl.is_high) high_hlines++;
+      else low_hlines++;
+    }
     
-    std::cerr << "[First AA] pieces=" << pieces.size() 
-              << " adjacency_edges=" << actual_edges 
-              << " (from " << plan.vertical_lines.size() << " vlines (" << high_vlines << " high), "
-              << plan.horizontal_lines.size() << " hlines (" << high_hlines << " high))\n";
+    std::cerr << "[AA #" << aa_count << "] aa_pid=" << aa_pid 
+              << " pieces=" << pieces.size() 
+              << " vlines=" << plan.vertical_lines.size() << " (high=" << high_vlines << ", low=" << low_vlines << ")"
+              << " hlines=" << plan.horizontal_lines.size() << " (high=" << high_hlines << ", low=" << low_hlines << ")"
+              << " adjacency_edges=" << actual_edges << "\n";
+    
+    // 打印所有切片的bbox
+    for(size_t i = 0; i < pieces.size(); ++i) {
+      const auto& p = pieces[i];
+      std::cerr << "  piece[" << i << "] bbox=[" << p.bb.minx << "," << p.bb.miny << "," << p.bb.maxx << "," << p.bb.maxy << "]\n";
+    }
+    
+    // 打印所有高电平切线（coord和span都是2x坐标）
+    for(const auto& vl : plan.vertical_lines) {
+      if(vl.is_high) {
+        std::cerr << "  high_vline: coord=" << vl.coord << " (1x=" << vl.coord/2 << ") span2=[" << vl.span_min2 << "," << vl.span_max2 << "]\n";
+      }
+    }
     first_aa = false;
   }
   
@@ -940,6 +1011,60 @@ void GateCtx::execute_cut(const Layout& L, u32 aa_pid) {
   slices.pieces = pieces;
   slices.adjacency = adjacency;
   slices.ready = true;
+  
+  if(debug_this_aa) {
+    std::cerr << "\n切割完成！生成 " << pieces.size() << " 个片段：\n";
+    for(size_t i = 0; i < pieces.size(); i++) {
+      const auto& p = pieces[i];
+      std::cerr << "  片段#" << i << ": bbox=[" << p.bb.minx << "," << p.bb.miny 
+                << "] 到 [" << p.bb.maxx << "," << p.bb.maxy << "], "
+                << "中心x=" << (p.bb.minx+p.bb.maxx)/2 << ", "
+                << "邻居数=" << adjacency[i].size() << "\n";
+      if(!adjacency[i].empty()) {
+        std::cerr << "    邻居: ";
+        for(u32 nb : adjacency[i]) {
+          std::cerr << "#" << nb << " ";
+        }
+        std::cerr << "\n";
+      }
+    }
+  }
+  
+  // 全局统计高低电平切线
+  static int total_high_vlines = 0;
+  static int total_low_vlines = 0;
+  static int total_high_hlines = 0;
+  static int total_low_hlines = 0;
+  static bool stats_printed = false;
+  
+  for(const auto& vl : plan.vertical_lines) {
+    if(vl.is_high) total_high_vlines++;
+    else total_low_vlines++;
+  }
+  for(const auto& hl : plan.horizontal_lines) {
+    if(hl.is_high) total_high_hlines++;
+    else total_low_hlines++;
+  }
+  
+  // 在最后打印统计
+  static int aa_cut_count = 0;
+  aa_cut_count++;
+  if(aa_cut_count >= 26400 && !stats_printed) {
+    stats_printed = true;
+    int total_high = total_high_vlines + total_high_hlines;
+    int total_low = total_low_vlines + total_low_hlines;
+    int total_all = total_high + total_low;
+    std::cerr << "\n=== Global Cutting Line Statistics ===\n";
+    std::cerr << "High-potential vertical lines: " << total_high_vlines << "\n";
+    std::cerr << "Low-potential vertical lines: " << total_low_vlines << "\n";
+    std::cerr << "High-potential horizontal lines: " << total_high_hlines << "\n";
+    std::cerr << "Low-potential horizontal lines: " << total_low_hlines << "\n";
+    std::cerr << "Total high-potential lines: " << total_high << " (" 
+              << (total_all > 0 ? (100.0 * total_high / total_all) : 0) << "%)\n";
+    std::cerr << "Total low-potential lines: " << total_low << " (" 
+              << (total_all > 0 ? (100.0 * total_low / total_all) : 0) << "%)\n";
+    std::cerr << "======================================\n\n";
+  }
 }
 
 void GateCtx::enqueue_entry_slices_from(u64 u_gid, u32 aa_pid, 
