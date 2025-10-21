@@ -1,5 +1,6 @@
-CMakeFiles/trace.dir/src/io.cpp.o: /root/autodl-tmp/EDA/code/src/io.cpp \
- /usr/include/stdc-predef.h /root/autodl-tmp/EDA/code/include/io.hpp \
+CMakeFiles/trace.dir/src/parser.cpp.o: \
+ /root/autodl-tmp/EDA/code/src/parser.cpp /usr/include/stdc-predef.h \
+ /root/autodl-tmp/EDA/code/include/parser.hpp \
  /root/autodl-tmp/EDA/code/include/types.hpp /usr/include/c++/11/cstdint \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/os_defines.h \
@@ -145,15 +146,7 @@ CMakeFiles/trace.dir/src/io.cpp.o: /root/autodl-tmp/EDA/code/src/io.cpp \
  /usr/include/c++/11/bits/node_handle.h \
  /usr/include/c++/11/bits/unordered_map.h \
  /usr/include/c++/11/bits/erase_if.h \
- /root/autodl-tmp/EDA/code/include/gate.hpp \
- /root/autodl-tmp/EDA/code/include/grid.hpp \
- /usr/include/c++/11/unordered_set \
- /usr/include/c++/11/bits/unordered_set.h /usr/include/c++/11/set \
- /usr/include/c++/11/bits/stl_tree.h /usr/include/c++/11/bits/stl_set.h \
- /usr/include/c++/11/bits/stl_multiset.h /usr/include/c++/11/queue \
- /usr/include/c++/11/deque /usr/include/c++/11/bits/stl_deque.h \
- /usr/include/c++/11/bits/deque.tcc /usr/include/c++/11/bits/stl_heap.h \
- /usr/include/c++/11/bits/stl_queue.h /usr/include/c++/11/fstream \
+ /root/autodl-tmp/EDA/code/include/geom.hpp /usr/include/c++/11/fstream \
  /usr/include/c++/11/istream /usr/include/c++/11/ios \
  /usr/include/c++/11/exception /usr/include/c++/11/bits/exception_ptr.h \
  /usr/include/c++/11/bits/cxxabi_init_exception.h \
@@ -177,12 +170,5 @@ CMakeFiles/trace.dir/src/io.cpp.o: /root/autodl-tmp/EDA/code/src/io.cpp \
  /usr/include/c++/11/bits/istream.tcc /usr/include/c++/11/bits/codecvt.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/basic_file.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++io.h \
- /usr/include/c++/11/bits/fstream.tcc /usr/include/c++/11/algorithm \
- /usr/include/c++/11/bits/stl_algo.h \
- /usr/include/c++/11/bits/algorithmfwd.h \
- /usr/include/c++/11/bits/stl_tempbuf.h \
- /usr/include/c++/11/bits/uniform_int_dist.h \
- /usr/include/c++/11/pstl/glue_algorithm_defs.h \
- /usr/include/c++/11/functional /usr/include/c++/11/bits/refwrap.h \
- /usr/include/c++/11/bits/std_function.h \
- /usr/include/c++/11/pstl/execution_defs.h /usr/include/c++/11/iostream
+ /usr/include/c++/11/bits/fstream.tcc /usr/include/c++/11/sstream \
+ /usr/include/c++/11/bits/sstream.tcc /usr/include/c++/11/iostream

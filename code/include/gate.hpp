@@ -44,17 +44,10 @@ struct GateCtx {
     poly_high.clear();
     poly_to_aa_cands.clear();
     aa_to_poly_cands.clear();
-    clear_cached_slices();
-    poly_grid = Grid();
-    aa_grid = Grid();
-  }
-
-  void clear_cached_slices(){
     aa_plans.clear();
     aa_slices.clear();
-    slice_key_to_gid.clear();
-    gid_to_slice_key.clear();
-    next_slice_gid = (1ULL << 62);
+    poly_grid = Grid();
+    aa_grid = Grid();
   }
 
   // Build coarse candidates (bbox + grid probe)

@@ -13,10 +13,9 @@ add_executable(trace
   src/geom.cpp
   src/parser.cpp
   src/grid.cpp
-  src/gate_new_gpt.cpp
+  src/gate.cpp
   src/fdec.cpp
   src/io.cpp
+  src/metrics.cpp
 )
 target_include_directories(trace PRIVATE include)
-
-

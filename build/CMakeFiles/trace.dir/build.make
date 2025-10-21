@@ -56,7 +56,7 @@ EQUALS = =
 CMAKE_SOURCE_DIR = /root/autodl-tmp/EDA/code
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /root/autodl-tmp/EDA/code/build
+CMAKE_BINARY_DIR = /root/autodl-tmp/EDA/build
 
 # Include any dependencies generated for this target.
 include CMakeFiles/trace.dir/depend.make
@@ -70,9 +70,9 @@ include CMakeFiles/trace.dir/progress.make
 include CMakeFiles/trace.dir/flags.make
 
 CMakeFiles/trace.dir/src/main.cpp.o: CMakeFiles/trace.dir/flags.make
-CMakeFiles/trace.dir/src/main.cpp.o: ../src/main.cpp
+CMakeFiles/trace.dir/src/main.cpp.o: /root/autodl-tmp/EDA/code/src/main.cpp
 CMakeFiles/trace.dir/src/main.cpp.o: CMakeFiles/trace.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/code/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/trace.dir/src/main.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/trace.dir/src/main.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/trace.dir/src/main.cpp.o -MF CMakeFiles/trace.dir/src/main.cpp.o.d -o CMakeFiles/trace.dir/src/main.cpp.o -c /root/autodl-tmp/EDA/code/src/main.cpp
 
 CMakeFiles/trace.dir/src/main.cpp.i: cmake_force
@@ -84,9 +84,9 @@ CMakeFiles/trace.dir/src/main.cpp.s: cmake_force
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /root/autodl-tmp/EDA/code/src/main.cpp -o CMakeFiles/trace.dir/src/main.cpp.s
 
 CMakeFiles/trace.dir/src/geom.cpp.o: CMakeFiles/trace.dir/flags.make
-CMakeFiles/trace.dir/src/geom.cpp.o: ../src/geom.cpp
+CMakeFiles/trace.dir/src/geom.cpp.o: /root/autodl-tmp/EDA/code/src/geom.cpp
 CMakeFiles/trace.dir/src/geom.cpp.o: CMakeFiles/trace.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/code/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/trace.dir/src/geom.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/trace.dir/src/geom.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/trace.dir/src/geom.cpp.o -MF CMakeFiles/trace.dir/src/geom.cpp.o.d -o CMakeFiles/trace.dir/src/geom.cpp.o -c /root/autodl-tmp/EDA/code/src/geom.cpp
 
 CMakeFiles/trace.dir/src/geom.cpp.i: cmake_force
@@ -98,9 +98,9 @@ CMakeFiles/trace.dir/src/geom.cpp.s: cmake_force
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /root/autodl-tmp/EDA/code/src/geom.cpp -o CMakeFiles/trace.dir/src/geom.cpp.s
 
 CMakeFiles/trace.dir/src/parser.cpp.o: CMakeFiles/trace.dir/flags.make
-CMakeFiles/trace.dir/src/parser.cpp.o: ../src/parser.cpp
+CMakeFiles/trace.dir/src/parser.cpp.o: /root/autodl-tmp/EDA/code/src/parser.cpp
 CMakeFiles/trace.dir/src/parser.cpp.o: CMakeFiles/trace.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/code/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/trace.dir/src/parser.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/trace.dir/src/parser.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/trace.dir/src/parser.cpp.o -MF CMakeFiles/trace.dir/src/parser.cpp.o.d -o CMakeFiles/trace.dir/src/parser.cpp.o -c /root/autodl-tmp/EDA/code/src/parser.cpp
 
 CMakeFiles/trace.dir/src/parser.cpp.i: cmake_force
@@ -112,9 +112,9 @@ CMakeFiles/trace.dir/src/parser.cpp.s: cmake_force
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /root/autodl-tmp/EDA/code/src/parser.cpp -o CMakeFiles/trace.dir/src/parser.cpp.s
 
 CMakeFiles/trace.dir/src/grid.cpp.o: CMakeFiles/trace.dir/flags.make
-CMakeFiles/trace.dir/src/grid.cpp.o: ../src/grid.cpp
+CMakeFiles/trace.dir/src/grid.cpp.o: /root/autodl-tmp/EDA/code/src/grid.cpp
 CMakeFiles/trace.dir/src/grid.cpp.o: CMakeFiles/trace.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/code/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/trace.dir/src/grid.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/trace.dir/src/grid.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/trace.dir/src/grid.cpp.o -MF CMakeFiles/trace.dir/src/grid.cpp.o.d -o CMakeFiles/trace.dir/src/grid.cpp.o -c /root/autodl-tmp/EDA/code/src/grid.cpp
 
 CMakeFiles/trace.dir/src/grid.cpp.i: cmake_force
@@ -126,9 +126,9 @@ CMakeFiles/trace.dir/src/grid.cpp.s: cmake_force
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /root/autodl-tmp/EDA/code/src/grid.cpp -o CMakeFiles/trace.dir/src/grid.cpp.s
 
 CMakeFiles/trace.dir/src/gate.cpp.o: CMakeFiles/trace.dir/flags.make
-CMakeFiles/trace.dir/src/gate.cpp.o: ../src/gate.cpp
+CMakeFiles/trace.dir/src/gate.cpp.o: /root/autodl-tmp/EDA/code/src/gate.cpp
 CMakeFiles/trace.dir/src/gate.cpp.o: CMakeFiles/trace.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/code/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/trace.dir/src/gate.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/trace.dir/src/gate.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/trace.dir/src/gate.cpp.o -MF CMakeFiles/trace.dir/src/gate.cpp.o.d -o CMakeFiles/trace.dir/src/gate.cpp.o -c /root/autodl-tmp/EDA/code/src/gate.cpp
 
 CMakeFiles/trace.dir/src/gate.cpp.i: cmake_force
@@ -140,9 +140,9 @@ CMakeFiles/trace.dir/src/gate.cpp.s: cmake_force
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /root/autodl-tmp/EDA/code/src/gate.cpp -o CMakeFiles/trace.dir/src/gate.cpp.s
 
 CMakeFiles/trace.dir/src/fdec.cpp.o: CMakeFiles/trace.dir/flags.make
-CMakeFiles/trace.dir/src/fdec.cpp.o: ../src/fdec.cpp
+CMakeFiles/trace.dir/src/fdec.cpp.o: /root/autodl-tmp/EDA/code/src/fdec.cpp
 CMakeFiles/trace.dir/src/fdec.cpp.o: CMakeFiles/trace.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/code/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/trace.dir/src/fdec.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/trace.dir/src/fdec.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/trace.dir/src/fdec.cpp.o -MF CMakeFiles/trace.dir/src/fdec.cpp.o.d -o CMakeFiles/trace.dir/src/fdec.cpp.o -c /root/autodl-tmp/EDA/code/src/fdec.cpp
 
 CMakeFiles/trace.dir/src/fdec.cpp.i: cmake_force
@@ -154,9 +154,9 @@ CMakeFiles/trace.dir/src/fdec.cpp.s: cmake_force
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /root/autodl-tmp/EDA/code/src/fdec.cpp -o CMakeFiles/trace.dir/src/fdec.cpp.s
 
 CMakeFiles/trace.dir/src/io.cpp.o: CMakeFiles/trace.dir/flags.make
-CMakeFiles/trace.dir/src/io.cpp.o: ../src/io.cpp
+CMakeFiles/trace.dir/src/io.cpp.o: /root/autodl-tmp/EDA/code/src/io.cpp
 CMakeFiles/trace.dir/src/io.cpp.o: CMakeFiles/trace.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/code/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/trace.dir/src/io.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/trace.dir/src/io.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/trace.dir/src/io.cpp.o -MF CMakeFiles/trace.dir/src/io.cpp.o.d -o CMakeFiles/trace.dir/src/io.cpp.o -c /root/autodl-tmp/EDA/code/src/io.cpp
 
 CMakeFiles/trace.dir/src/io.cpp.i: cmake_force
@@ -168,9 +168,9 @@ CMakeFiles/trace.dir/src/io.cpp.s: cmake_force
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /root/autodl-tmp/EDA/code/src/io.cpp -o CMakeFiles/trace.dir/src/io.cpp.s
 
 CMakeFiles/trace.dir/src/metrics.cpp.o: CMakeFiles/trace.dir/flags.make
-CMakeFiles/trace.dir/src/metrics.cpp.o: ../src/metrics.cpp
+CMakeFiles/trace.dir/src/metrics.cpp.o: /root/autodl-tmp/EDA/code/src/metrics.cpp
 CMakeFiles/trace.dir/src/metrics.cpp.o: CMakeFiles/trace.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/code/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/trace.dir/src/metrics.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/root/autodl-tmp/EDA/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/trace.dir/src/metrics.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/trace.dir/src/metrics.cpp.o -MF CMakeFiles/trace.dir/src/metrics.cpp.o.d -o CMakeFiles/trace.dir/src/metrics.cpp.o -c /root/autodl-tmp/EDA/code/src/metrics.cpp
 
 CMakeFiles/trace.dir/src/metrics.cpp.i: cmake_force
@@ -205,7 +205,7 @@ trace: CMakeFiles/trace.dir/src/io.cpp.o
 trace: CMakeFiles/trace.dir/src/metrics.cpp.o
 trace: CMakeFiles/trace.dir/build.make
 trace: CMakeFiles/trace.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/root/autodl-tmp/EDA/code/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Linking CXX executable trace"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/root/autodl-tmp/EDA/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Linking CXX executable trace"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/trace.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
@@ -217,6 +217,6 @@ CMakeFiles/trace.dir/clean:
 .PHONY : CMakeFiles/trace.dir/clean
 
 CMakeFiles/trace.dir/depend:
-	cd /root/autodl-tmp/EDA/code/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /root/autodl-tmp/EDA/code /root/autodl-tmp/EDA/code /root/autodl-tmp/EDA/code/build /root/autodl-tmp/EDA/code/build /root/autodl-tmp/EDA/code/build/CMakeFiles/trace.dir/DependInfo.cmake --color=$(COLOR)
+	cd /root/autodl-tmp/EDA/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /root/autodl-tmp/EDA/code /root/autodl-tmp/EDA/code /root/autodl-tmp/EDA/build /root/autodl-tmp/EDA/build /root/autodl-tmp/EDA/build/CMakeFiles/trace.dir/DependInfo.cmake --color=$(COLOR)
 .PHONY : CMakeFiles/trace.dir/depend
 

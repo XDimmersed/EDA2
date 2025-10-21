@@ -36,6 +36,7 @@ struct FDEC {
 
 private:
   void expand_frontier_no_gate(u64 gid, std::queue<u64>& q,
-                               std::unordered_set<u64>& visited) const;
+                               std::unordered_set<u64>& visited,
+                               bool allow_aa_hook = true) const;
   void parse_via_to_adjacency();
 };
