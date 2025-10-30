@@ -23,6 +23,32 @@ using Box = bg::model::box<Point>;
 using RTreeValue = std::pair<Box, int>;
 using RTree = bgi::rtree<RTreeValue, bgi::rstar<24>>;
 
+struct PhaseStopwatch {
+    std::chrono::high_resolution_clock::time_point t0;
+    double& sink;
+    bool active;
+    PhaseStopwatch(const char* name, double& s)
+        : sink(s), active(name != nullptr) {
+        if (active) {
+            t0 = std::chrono::high_resolution_clock::now();
+        }
+    }
+    ~PhaseStopwatch() {
+        if (active) {
+            auto t1 = std::chrono::high_resolution_clock::now();
+            sink += std::chrono::duration<double>(t1 - t0).count();
+        }
+    }
+};
+
+double g_time_parse = 0.0;
+double g_time_pre = 0.0;
+double g_time_s1 = 0.0;
+double g_time_s2 = 0.0;
+double g_time_slice = 0.0;
+double g_time_output = 0.0;
+bool   g_profile = true;
+
 // 多边形信息结构体
 struct PolygonInfo {
     int id;
@@ -30,6 +56,8 @@ struct PolygonInfo {
     std::vector<std::pair<int, int>> vertices;
     Polygon geom;
     Box bbox;
+    std::vector<std::array<int, 3>> horizEdges;
+    std::vector<std::array<int, 3>> vertEdges;
     int originalId;
 };
 
@@ -63,6 +91,130 @@ std::vector<char> visited;
 std::map<std::string, int> layerNameToId;
 std::map<int, std::string> layerIdToName;
 int nextLayerId = 1;
+static std::vector<std::vector<int>> g_layerPolyIds;
+
+struct GridIndex {
+    int cell = 0;
+    int64_t xmin = 0;
+    int64_t ymin = 0;
+    int64_t xmax = 0;
+    int64_t ymax = 0;
+    std::unordered_map<uint64_t, std::vector<int>> buckets;
+};
+
+static std::vector<GridIndex> g_grid;
+static std::vector<int> g_seen_stamp;
+static int g_seen_tick = 1;
+
+inline uint64_t cell_key(int ix, int iy) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(ix)) << 32) ^ static_cast<uint32_t>(iy);
+}
+
+inline void ensure_seen_stamp() {
+    if (g_seen_stamp.size() != polygons.size()) {
+        g_seen_stamp.assign(polygons.size(), 0);
+        g_seen_tick = 1;
+    }
+}
+
+inline void grid_put(GridIndex& G, const Box& b, int pid) {
+    if (G.cell <= 0) return;
+    long long xmin = b.min_corner().x();
+    long long ymin = b.min_corner().y();
+    long long xmax = b.max_corner().x();
+    long long ymax = b.max_corner().y();
+    long long dx0 = std::max<long long>(0, xmin - G.xmin);
+    long long dy0 = std::max<long long>(0, ymin - G.ymin);
+    long long dx1 = std::max<long long>(0, xmax - G.xmin);
+    long long dy1 = std::max<long long>(0, ymax - G.ymin);
+    int ix0 = static_cast<int>(dx0 / G.cell);
+    int iy0 = static_cast<int>(dy0 / G.cell);
+    int ix1 = static_cast<int>(dx1 / G.cell);
+    int iy1 = static_cast<int>(dy1 / G.cell);
+    for (int ix = ix0; ix <= ix1; ++ix) {
+        for (int iy = iy0; iy <= iy1; ++iy) {
+            G.buckets[cell_key(ix, iy)].push_back(pid);
+        }
+    }
+}
+
+inline int estimate_cell(const std::vector<int>& ids) {
+    if (ids.empty()) return 1024;
+    std::vector<int> ws;
+    std::vector<int> hs;
+    ws.reserve(ids.size());
+    hs.reserve(ids.size());
+    for (int pid : ids) {
+        const auto& box = polygons[pid].bbox;
+        int w = std::max(1, box.max_corner().x() - box.min_corner().x());
+        int h = std::max(1, box.max_corner().y() - box.min_corner().y());
+        ws.push_back(w);
+        hs.push_back(h);
+    }
+    auto median = [](std::vector<int>& vals) {
+        size_t mid = vals.size() / 2;
+        std::nth_element(vals.begin(), vals.begin() + mid, vals.end());
+        return std::max(1, vals[mid]);
+    };
+    int w = median(ws);
+    int h = median(hs);
+    return std::max(1, (w + h) / 2);
+}
+
+inline void build_uniform_grid_indices() {
+    g_grid.clear();
+    g_grid.resize(g_layerPolyIds.size());
+    for (int L = 0; L < static_cast<int>(g_layerPolyIds.size()); ++L) {
+        const auto& ids = g_layerPolyIds[L];
+        if (ids.empty()) continue;
+        GridIndex G;
+        G.xmin = G.ymin = std::numeric_limits<int64_t>::max();
+        G.xmax = G.ymax = std::numeric_limits<int64_t>::min();
+        for (int pid : ids) {
+            const auto& box = polygons[pid].bbox;
+            G.xmin = std::min<int64_t>(G.xmin, box.min_corner().x());
+            G.ymin = std::min<int64_t>(G.ymin, box.min_corner().y());
+            G.xmax = std::max<int64_t>(G.xmax, box.max_corner().x());
+            G.ymax = std::max<int64_t>(G.ymax, box.max_corner().y());
+        }
+        G.cell = estimate_cell(ids);
+        G.buckets.reserve(ids.size() * 2);
+        for (int pid : ids) {
+            grid_put(G, polygons[pid].bbox, pid);
+        }
+        g_grid[L] = std::move(G);
+    }
+    ensure_seen_stamp();
+}
+
+struct OutPoly {
+    int layer;
+    std::vector<std::pair<int, int>> verts;
+};
+
+struct FastWriter {
+    std::vector<char> buf;
+    explicit FastWriter(size_t cap = 4u << 20) { buf.reserve(cap); }
+    inline void put(char c) { buf.push_back(c); }
+    inline void puts(const std::string& s) { buf.insert(buf.end(), s.begin(), s.end()); }
+    inline void puti(int x) {
+        long long val = x;
+        if (val == 0) { buf.push_back('0'); return; }
+        if (val < 0) { buf.push_back('-'); val = -val; }
+        char tmp[32]; int n = 0;
+        while (val > 0) { tmp[n++] = char('0' + (val % 10)); val /= 10; }
+        while (n--) buf.push_back(tmp[n]);
+    }
+    inline void sp() { buf.push_back(' '); }
+    inline void nl() { buf.push_back('\n'); }
+    bool write_to_file(const std::string& path) {
+        FILE* f = fopen(path.c_str(), "wb");
+        if (!f) return false;
+        size_t written = fwrite(buf.data(), 1, buf.size(), f);
+        fclose(f);
+        return written == buf.size();
+    }
+};
 
 // 相交判断缓存（仅用于问题1优化）
 // 注意：问题2和3构建全图时会产生大量缓存条目，反而降低性能
@@ -71,6 +223,11 @@ int nextLayerId = 1;
 // 命令行参数
 std::string layoutFile, ruleFile, outputFile;
 int threadCount = 1;
+bool g_fastgeo = false;
+bool g_s1bfs = true;
+bool g_s2bfs = true;
+int  g_slice_threads = 8;
+bool g_slice_enable = true;
 
 // 解析层名转换为层ID
 int getLayerId(const std::string& layerName) {
@@ -98,12 +255,30 @@ bool parseCommandLine(int argc, char* argv[]) {
                 std::cerr << "Error: thread count must be between 1 and 64\n";
                 return false;
             }
+        } else if (arg == "-fastgeo" && i + 1 < argc) {
+            int v = std::atoi(argv[++i]);
+            g_fastgeo = (v != 0);
+        } else if (arg == "-s1bfs" && i + 1 < argc) {
+            int v = std::atoi(argv[++i]);
+            g_s1bfs = (v != 0);
+        } else if (arg == "-s2bfs" && i + 1 < argc) {
+            int v = std::atoi(argv[++i]);
+            g_s2bfs = (v != 0);
+        } else if (arg == "-slicethreads" && i + 1 < argc) {
+            g_slice_threads = std::max(1, std::atoi(argv[++i]));
+        } else if (arg == "-slice" && i + 1 < argc) {
+            int v = std::atoi(argv[++i]);
+            g_slice_enable = (v != 0);
+        } else if (arg == "-profile" && i + 1 < argc) {
+            g_profile = (std::atoi(argv[++i]) != 0);
         }
     }
-    
+
     if (layoutFile.empty() || ruleFile.empty() || outputFile.empty()) {
-        std::cerr << "Usage: " << argv[0] 
-                  << " -layout <file> -rule <file> -output <file> [-thread <n>]\n";
+        std::cerr << "Usage: " << argv[0]
+                  << " -layout <file> -rule <file> -output <file>"
+                  << " [-thread <n>] [-fastgeo 0|1] [-s1bfs 0|1] [-s2bfs 0|1]"
+                  << " [-slice 0|1] [-slicethreads <n>] [-profile 0|1]\n";
         return false;
     }
     
@@ -114,7 +289,13 @@ bool parseCommandLine(int argc, char* argv[]) {
     std::cerr << "  Rule: " << ruleFile << "\n";
     std::cerr << "  Output: " << outputFile << "\n";
     std::cerr << "  Threads: " << g_threadCount << "\n";
-    
+    std::cerr << "  Fast-geo: " << (g_fastgeo ? "ON" : "OFF") << "\n";
+    std::cerr << "  S1 OnDemand BFS: " << (g_s1bfs ? "ON" : "OFF") << "\n";
+    std::cerr << "  S2 OnDemand BFS: " << (g_s2bfs ? "ON" : "OFF") << "\n";
+    std::cerr << "  Slice: " << (g_slice_enable ? "ON" : "OFF")
+              << ", threads=" << g_slice_threads << "\n";
+    std::cerr << "  Profile: " << (g_profile ? "ON" : "OFF") << "\n";
+
     return true;
 }
 
@@ -139,6 +320,43 @@ inline int fast_atoi(const char* str, const char** endptr) {
     
     if (endptr) *endptr = str;
     return negative ? -val : val;
+}
+
+inline void precompute_edges(PolygonInfo& poly) {
+    poly.horizEdges.clear();
+    poly.vertEdges.clear();
+    const auto& V = poly.vertices;
+    if (V.empty()) return;
+
+    auto add_h = [&](int y, int x1, int x2) {
+        if (x1 > x2) std::swap(x1, x2);
+        poly.horizEdges.push_back({y, x1, x2});
+    };
+    auto add_v = [&](int x, int y1, int y2) {
+        if (y1 > y2) std::swap(y1, y2);
+        poly.vertEdges.push_back({x, y1, y2});
+    };
+
+    for (size_t i = 0; i < V.size(); ++i) {
+        const auto& a = V[i];
+        const auto& b = V[(i + 1) % V.size()];
+        if (a.second == b.second) {
+            add_h(a.second, a.first, b.first);
+        } else if (a.first == b.first) {
+            add_v(a.first, a.second, b.second);
+        } else {
+            // 非轴对齐边在题目设定下不应出现
+        }
+    }
+
+    std::sort(poly.horizEdges.begin(), poly.horizEdges.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs[0] != rhs[0]) return lhs[0] < rhs[0];
+        return lhs[1] < rhs[1];
+    });
+    std::sort(poly.vertEdges.begin(), poly.vertEdges.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs[0] != rhs[0]) return lhs[0] < rhs[0];
+        return lhs[1] < rhs[1];
+    });
 }
 
 // 解析版图文件
@@ -227,14 +445,15 @@ bool parse_layout_file(const std::string& filename) {
                     bg::append(poly.geom.outer(), Point(v.first, v.second));
                 }
                 
-                if (!poly.vertices.empty() && 
+                if (!poly.vertices.empty() &&
                     poly.vertices.front() != poly.vertices.back()) {
                     const auto& first = poly.vertices[0];
                     bg::append(poly.geom.outer(), Point(first.first, first.second));
                 }
-                
+
                 bg::correct(poly.geom);
-                
+                precompute_edges(poly);
+
                 polygons.push_back(std::move(poly));
                 layerPolygons[currentLayer].push_back(polygonId - 1);
             }
@@ -447,70 +666,1018 @@ inline bool aabb_touch_or_overlap(const Box& a, const Box& b) {
              b.max_corner().y() < a.min_corner().y());
 }
 
+inline Box aabb_intersection(const Box& a, const Box& b) {
+    int xmin = std::max(a.min_corner().x(), b.min_corner().x());
+    int ymin = std::max(a.min_corner().y(), b.min_corner().y());
+    int xmax = std::min(a.max_corner().x(), b.max_corner().x());
+    int ymax = std::min(a.max_corner().y(), b.max_corner().y());
+    return Box(Point(xmin, ymin), Point(xmax, ymax));
+}
+
+enum class ThroughKind { None, VerticalCut, HorizontalCut };
+
+inline ThroughKind through_kind_and_cutC(const PolygonInfo& AA,
+                                         const PolygonInfo& PO,
+                                         int& c_out) {
+    const Box& aaBox = AA.bbox;
+    const Box& poBox = PO.bbox;
+    if (!aabb_touch_or_overlap(aaBox, poBox)) {
+        return ThroughKind::None;
+    }
+
+    Box I = aabb_intersection(aaBox, poBox);
+    int aa_xmin = aaBox.min_corner().x();
+    int aa_xmax = aaBox.max_corner().x();
+    int aa_ymin = aaBox.min_corner().y();
+    int aa_ymax = aaBox.max_corner().y();
+    int ixmin = I.min_corner().x();
+    int ixmax = I.max_corner().x();
+    int iymin = I.min_corner().y();
+    int iymax = I.max_corner().y();
+
+    if (iymin == aa_ymin && iymax == aa_ymax && ixmin < ixmax) {
+        long long mid = (static_cast<long long>(ixmin) + static_cast<long long>(ixmax)) >> 1;
+        int c = static_cast<int>(mid);
+        if (c <= aa_xmin) c = aa_xmin + 1;
+        if (c >= aa_xmax) c = aa_xmax - 1;
+        if (c > aa_xmin && c < aa_xmax) {
+            c_out = c;
+            return ThroughKind::VerticalCut;
+        }
+    }
+
+    if (ixmin == aa_xmin && ixmax == aa_xmax && iymin < iymax) {
+        long long mid = (static_cast<long long>(iymin) + static_cast<long long>(iymax)) >> 1;
+        int c = static_cast<int>(mid);
+        if (c <= aa_ymin) c = aa_ymin + 1;
+        if (c >= aa_ymax) c = aa_ymax - 1;
+        if (c > aa_ymin && c < aa_ymax) {
+            c_out = c;
+            return ThroughKind::HorizontalCut;
+        }
+    }
+
+    return ThroughKind::None;
+}
+
+inline bool is_through(const Box& aa, const Box& po) {
+    if (!aabb_touch_or_overlap(aa, po)) return false;
+
+    int aa_xmin = aa.min_corner().x();
+    int aa_xmax = aa.max_corner().x();
+    int aa_ymin = aa.min_corner().y();
+    int aa_ymax = aa.max_corner().y();
+
+    int po_xmin = po.min_corner().x();
+    int po_xmax = po.max_corner().x();
+    int po_ymin = po.min_corner().y();
+    int po_ymax = po.max_corner().y();
+
+    bool vertical = (po_xmin <= aa_xmin) && (po_xmax >= aa_xmax) &&
+                    !(po_ymax < aa_ymin || po_ymin > aa_ymax);
+    bool horizontal = (po_ymin <= aa_ymin) && (po_ymax >= aa_ymax) &&
+                      !(po_xmax < aa_xmin || po_xmin > aa_xmax);
+    return vertical || horizontal;
+}
+
+inline bool gate_stripe_bbox(const PolygonInfo& AA, const PolygonInfo& PO, Box& stripeOut) {
+    int cut = 0;
+    ThroughKind kind = through_kind_and_cutC(AA, PO, cut);
+    if (kind == ThroughKind::None) {
+        return false;
+    }
+    stripeOut = aabb_intersection(AA.bbox, PO.bbox);
+    return true;
+}
+
+inline bool intervals_overlap_inclusive(int a1, int a2, int b1, int b2) {
+    if (a1 > a2) std::swap(a1, a2);
+    if (b1 > b2) std::swap(b1, b2);
+    return !(a2 < b1 || b2 < a1);
+}
+
+inline bool manhattan_intersects(const PolygonInfo& A, const PolygonInfo& B) {
+    if (!aabb_touch_or_overlap(A.bbox, B.bbox)) return false;
+
+    for (const auto& he : A.horizEdges) {
+        int y = he[0], x1 = he[1], x2 = he[2];
+        for (const auto& ve : B.vertEdges) {
+            int x = ve[0], y1 = ve[1], y2 = ve[2];
+            if (x >= x1 && x <= x2 && y >= y1 && y <= y2) return true;
+        }
+    }
+
+    for (const auto& he : B.horizEdges) {
+        int y = he[0], x1 = he[1], x2 = he[2];
+        for (const auto& ve : A.vertEdges) {
+            int x = ve[0], y1 = ve[1], y2 = ve[2];
+            if (x >= x1 && x <= x2 && y >= y1 && y <= y2) return true;
+        }
+    }
+
+    for (const auto& ha : A.horizEdges) {
+        for (const auto& hb : B.horizEdges) {
+            if (ha[0] == hb[0] && intervals_overlap_inclusive(ha[1], ha[2], hb[1], hb[2])) {
+                return true;
+            }
+        }
+    }
+
+    for (const auto& va : A.vertEdges) {
+        for (const auto& vb : B.vertEdges) {
+            if (va[0] == vb[0] && intervals_overlap_inclusive(va[1], va[2], vb[1], vb[2])) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 // 检查两个多边形是否相交（基础版本，无缓存）
 inline bool polygons_intersect(int id1, int id2) {
     const auto& p1 = polygons[id1];
     const auto& p2 = polygons[id2];
-    
+
     if (!fast_bbox_intersects(p1.bbox, p2.bbox)) {
         return false;
     }
-    
+
+    if (g_fastgeo) {
+        return manhattan_intersects(p1, p2);
+    }
     return bg::intersects(p1.geom, p2.geom);
+}
+
+inline bool gate_passable(int aaId, int poId, const std::vector<uint8_t>& isHighPO, Box* stripeOpt = nullptr) {
+    if (poId < 0 || poId >= (int)isHighPO.size()) return false;
+    if (!isHighPO[poId]) return false;
+    if (aaId < 0 || aaId >= (int)polygons.size()) return false;
+
+    const auto& AA = polygons[aaId];
+    const auto& PO = polygons[poId];
+    if (!polygons_intersect(aaId, poId)) return false;
+
+    Box stripe;
+    if (!gate_stripe_bbox(AA, PO, stripe)) return false;
+    if (stripeOpt) {
+        *stripeOpt = stripe;
+    }
+    return true;
+}
+
+struct SliceTask {
+    int aaId;
+    std::vector<int> vCuts;
+    std::vector<int> hCuts;
+};
+
+inline void uniq_sort(std::vector<int>& v) {
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()), v.end());
+}
+
+std::vector<SliceTask>
+collect_slice_tasks(const std::vector<uint8_t>& aaReached,
+                    const std::vector<uint8_t>& isHighPO,
+                    int aaLayer,
+                    int poLayer) {
+    std::vector<SliceTask> tasks;
+    if (aaLayer < 0 || poLayer < 0) {
+        return tasks;
+    }
+
+    std::vector<int> poIds;
+    if (poLayer < (int)g_layerPolyIds.size()) {
+        for (int pid : g_layerPolyIds[poLayer]) {
+            if (pid >= 0 && pid < (int)isHighPO.size() && isHighPO[pid]) {
+                poIds.push_back(pid);
+            }
+        }
+    } else {
+        for (int pid = 0; pid < (int)polygons.size(); ++pid) {
+            if (polygons[pid].layer == poLayer && pid < (int)isHighPO.size() && isHighPO[pid]) {
+                poIds.push_back(pid);
+            }
+        }
+    }
+
+    if (poIds.empty()) {
+        return tasks;
+    }
+
+    for (int aaId = 0; aaId < (int)polygons.size(); ++aaId) {
+        if (aaId >= (int)aaReached.size() || !aaReached[aaId]) continue;
+        const auto& AA = polygons[aaId];
+        if (AA.layer != aaLayer) continue;
+
+        SliceTask task;
+        task.aaId = aaId;
+
+        for (int poId : poIds) {
+            const auto& PO = polygons[poId];
+            if (!aabb_touch_or_overlap(AA.bbox, PO.bbox)) continue;
+            if (!polygons_intersect(aaId, poId)) continue;
+
+            int c = 0;
+            ThroughKind kind = through_kind_and_cutC(AA, PO, c);
+            if (kind == ThroughKind::VerticalCut) {
+                task.vCuts.push_back(c);
+            } else if (kind == ThroughKind::HorizontalCut) {
+                task.hCuts.push_back(c);
+            }
+        }
+
+        auto clip_line_inside = [&](std::vector<int>& cuts, bool vertical) {
+            int lo = vertical ? AA.bbox.min_corner().x() : AA.bbox.min_corner().y();
+            int hi = vertical ? AA.bbox.max_corner().x() : AA.bbox.max_corner().y();
+            std::vector<int> filtered;
+            filtered.reserve(cuts.size());
+            for (int c : cuts) {
+                if (c > lo && c < hi) {
+                    filtered.push_back(c);
+                }
+            }
+            cuts.swap(filtered);
+            uniq_sort(cuts);
+        };
+
+        clip_line_inside(task.vCuts, true);
+        clip_line_inside(task.hCuts, false);
+
+        if (!task.vCuts.empty() || !task.hCuts.empty()) {
+            tasks.push_back(std::move(task));
+        }
+    }
+
+    return tasks;
+}
+
+inline long long poly_area2(const std::vector<std::pair<int, int>>& V) {
+    long long s = 0;
+    int n = static_cast<int>(V.size());
+    for (int i = 0; i < n; ++i) {
+        int j = (i + 1) % n;
+        s += static_cast<long long>(V[i].first) * V[j].second -
+             static_cast<long long>(V[j].first) * V[i].second;
+    }
+    return s;
+}
+
+inline bool is_degenerate(const std::vector<std::pair<int, int>>& V) {
+    if (static_cast<int>(V.size()) < 3) return true;
+    return poly_area2(V) == 0;
+}
+
+std::vector<std::pair<int, int>>
+clip_vertical(const std::vector<std::pair<int, int>>& V, int c, bool keepLeft) {
+    std::vector<std::pair<int, int>> out;
+    if (V.empty()) return out;
+
+    auto inside = [&](int x) {
+        return keepLeft ? (x <= c) : (x > c);
+    };
+
+    int n = static_cast<int>(V.size());
+    for (int i = 0; i < n; ++i) {
+        auto S = V[i];
+        auto E = V[(i + 1) % n];
+        bool Sin = inside(S.first);
+        bool Ein = inside(E.first);
+
+        if (S.first == E.first && S.first == c) {
+            if (keepLeft) {
+                if (out.empty() || out.back() != S) out.push_back(S);
+                if (out.empty() || out.back() != E) out.push_back(E);
+            }
+            continue;
+        }
+
+        if (Sin && Ein) {
+            if (out.empty() || out.back() != E) out.push_back(E);
+        } else if (Sin && !Ein) {
+            if (S.second == E.second) {
+                out.push_back({c, S.second});
+            }
+        } else if (!Sin && Ein) {
+            if (S.second == E.second) {
+                out.push_back({c, S.second});
+            }
+            out.push_back(E);
+        }
+    }
+
+    if (out.size() >= 2) {
+        std::vector<std::pair<int, int>> tmp;
+        tmp.reserve(out.size());
+        tmp.push_back(out[0]);
+        for (size_t i = 1; i < out.size(); ++i) {
+            if (out[i] != tmp.back()) {
+                tmp.push_back(out[i]);
+            }
+        }
+        out.swap(tmp);
+    }
+
+    if (is_degenerate(out)) out.clear();
+    return out;
+}
+
+std::vector<std::pair<int, int>>
+clip_horizontal(const std::vector<std::pair<int, int>>& V, int c, bool keepBottom) {
+    std::vector<std::pair<int, int>> out;
+    if (V.empty()) return out;
+
+    auto inside = [&](int y) {
+        return keepBottom ? (y <= c) : (y > c);
+    };
+
+    int n = static_cast<int>(V.size());
+    for (int i = 0; i < n; ++i) {
+        auto S = V[i];
+        auto E = V[(i + 1) % n];
+        bool Sin = inside(S.second);
+        bool Ein = inside(E.second);
+
+        if (S.second == E.second && S.second == c) {
+            if (keepBottom) {
+                if (out.empty() || out.back() != S) out.push_back(S);
+                if (out.empty() || out.back() != E) out.push_back(E);
+            }
+            continue;
+        }
+
+        if (Sin && Ein) {
+            if (out.empty() || out.back() != E) out.push_back(E);
+        } else if (Sin && !Ein) {
+            if (S.first == E.first) {
+                out.push_back({S.first, c});
+            }
+        } else if (!Sin && Ein) {
+            if (S.first == E.first) {
+                out.push_back({S.first, c});
+            }
+            out.push_back(E);
+        }
+    }
+
+    if (out.size() >= 2) {
+        std::vector<std::pair<int, int>> tmp;
+        tmp.reserve(out.size());
+        tmp.push_back(out[0]);
+        for (size_t i = 1; i < out.size(); ++i) {
+            if (out[i] != tmp.back()) {
+                tmp.push_back(out[i]);
+            }
+        }
+        out.swap(tmp);
+    }
+
+    if (is_degenerate(out)) out.clear();
+    return out;
+}
+
+std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>>
+splitByVerticalLine(const std::vector<std::pair<int, int>>& V, int c) {
+    auto L = clip_vertical(V, c, true);
+    auto R = clip_vertical(V, c, false);
+    return {std::move(L), std::move(R)};
+}
+
+std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>>
+splitByHorizontalLine(const std::vector<std::pair<int, int>>& V, int c) {
+    auto B = clip_horizontal(V, c, true);
+    auto T = clip_horizontal(V, c, false);
+    return {std::move(B), std::move(T)};
+}
+
+std::vector<OutPoly>
+slice_one_AA(int aaId, const std::vector<int>& vCuts, const std::vector<int>& hCuts) {
+    const auto& A = polygons[aaId];
+    std::vector<std::vector<std::pair<int, int>>> parts;
+    parts.clear();
+    parts.emplace_back(A.vertices);
+
+    for (int c : vCuts) {
+        std::vector<std::vector<std::pair<int, int>>> next;
+        for (auto& P : parts) {
+            if (P.empty()) continue;
+            auto halves = splitByVerticalLine(P, c);
+            if (!halves.first.empty()) next.push_back(std::move(halves.first));
+            if (!halves.second.empty()) next.push_back(std::move(halves.second));
+        }
+        parts.swap(next);
+    }
+
+    for (int c : hCuts) {
+        std::vector<std::vector<std::pair<int, int>>> next;
+        for (auto& P : parts) {
+            if (P.empty()) continue;
+            auto halves = splitByHorizontalLine(P, c);
+            if (!halves.first.empty()) next.push_back(std::move(halves.first));
+            if (!halves.second.empty()) next.push_back(std::move(halves.second));
+        }
+        parts.swap(next);
+    }
+
+    std::vector<OutPoly> out;
+    out.reserve(parts.size());
+    for (auto& P : parts) {
+        if (P.size() >= 3 && !is_degenerate(P)) {
+            if (!P.empty() && P.front() == P.back()) {
+                P.pop_back();
+            }
+            out.push_back(OutPoly{A.layer, std::move(P)});
+        }
+    }
+    return out;
+}
+
+std::vector<OutPoly>
+run_slicing_parallel(const std::vector<SliceTask>& tasks) {
+    std::vector<std::vector<OutPoly>> perTask(tasks.size());
+
+    #pragma omp parallel for schedule(static) num_threads(g_slice_threads)
+    for (int i = 0; i < static_cast<int>(tasks.size()); ++i) {
+        const auto& t = tasks[i];
+        perTask[i] = slice_one_AA(t.aaId, t.vCuts, t.hCuts);
+    }
+
+    std::vector<OutPoly> all;
+    size_t total = 0;
+    for (const auto& v : perTask) {
+        total += v.size();
+    }
+    all.reserve(total);
+    for (auto& v : perTask) {
+        all.insert(all.end(), std::make_move_iterator(v.begin()), std::make_move_iterator(v.end()));
+    }
+    return all;
+}
+
+PolygonInfo make_polygoninfo_from_outpoly(const OutPoly& poly) {
+    PolygonInfo out;
+    out.id = -1;
+    out.layer = poly.layer;
+    out.originalId = -1;
+    out.vertices = poly.verts;
+    if (!out.vertices.empty()) {
+        int minX = out.vertices[0].first;
+        int maxX = out.vertices[0].first;
+        int minY = out.vertices[0].second;
+        int maxY = out.vertices[0].second;
+        out.geom.outer().clear();
+        for (const auto& v : out.vertices) {
+            minX = std::min(minX, v.first);
+            maxX = std::max(maxX, v.first);
+            minY = std::min(minY, v.second);
+            maxY = std::max(maxY, v.second);
+            bg::append(out.geom.outer(), Point(v.first, v.second));
+        }
+        bg::append(out.geom.outer(), Point(out.vertices.front().first, out.vertices.front().second));
+        bg::correct(out.geom);
+        out.bbox = Box(Point(minX, minY), Point(maxX, maxY));
+    }
+    precompute_edges(out);
+    return out;
+}
+
+inline bool point_in_bbox(const Box& box, int x, int y) {
+    return !(x < box.min_corner().x() || x > box.max_corner().x() ||
+             y < box.min_corner().y() || y > box.max_corner().y());
+}
+
+inline void query_layer_candidates_linear(int layer, const Box& qbox, std::vector<int>& out) {
+    if (layer < 0 || layer >= static_cast<int>(g_layerPolyIds.size())) return;
+
+    if (layer < static_cast<int>(g_grid.size())) {
+        const auto& G = g_grid[layer];
+        if (G.cell > 0 && !G.buckets.empty()) {
+            ensure_seen_stamp();
+            int mytick = ++g_seen_tick;
+            if (g_seen_tick == std::numeric_limits<int>::max()) {
+                std::fill(g_seen_stamp.begin(), g_seen_stamp.end(), 0);
+                g_seen_tick = 1;
+                mytick = ++g_seen_tick;
+            }
+
+            long long qxmin = qbox.min_corner().x();
+            long long qymin = qbox.min_corner().y();
+            long long qxmax = qbox.max_corner().x();
+            long long qymax = qbox.max_corner().y();
+
+            long long dx0 = qxmin - G.xmin; if (dx0 < 0) dx0 = 0;
+            long long dy0 = qymin - G.ymin; if (dy0 < 0) dy0 = 0;
+            long long dx1 = qxmax - G.xmin; if (dx1 < 0) dx1 = 0;
+            long long dy1 = qymax - G.ymin; if (dy1 < 0) dy1 = 0;
+
+            int ix0 = static_cast<int>(dx0 / G.cell);
+            int iy0 = static_cast<int>(dy0 / G.cell);
+            int ix1 = static_cast<int>(dx1 / G.cell);
+            int iy1 = static_cast<int>(dy1 / G.cell);
+
+            for (int ix = ix0; ix <= ix1; ++ix) {
+                for (int iy = iy0; iy <= iy1; ++iy) {
+                    auto it = G.buckets.find(cell_key(ix, iy));
+                    if (it == G.buckets.end()) continue;
+                    for (int pid : it->second) {
+                        if (pid < 0 || pid >= static_cast<int>(polygons.size())) continue;
+                        if (g_seen_stamp[pid] == mytick) continue;
+                        const auto& box = polygons[pid].bbox;
+                        if (box.max_corner().x() < qxmin || qxmax < box.min_corner().x() ||
+                            box.max_corner().y() < qymin || qymax < box.min_corner().y()) {
+                            continue;
+                        }
+                        g_seen_stamp[pid] = mytick;
+                        out.push_back(pid);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    const auto& ids = g_layerPolyIds[layer];
+    int qxmin = qbox.min_corner().x();
+    int qxmax = qbox.max_corner().x();
+    int qymin = qbox.min_corner().y();
+    int qymax = qbox.max_corner().y();
+
+    for (int pid : ids) {
+        const auto& box = polygons[pid].bbox;
+        if (!(box.max_corner().x() < qxmin || qxmax < box.min_corner().x() ||
+              box.max_corner().y() < qymin || qymax < box.min_corner().y())) {
+            out.push_back(pid);
+        }
+    }
+}
+
+inline void query_layer_candidates(int layer, const Box& qbox, std::vector<int>& out) {
+    if (layer >= 0 && layer < static_cast<int>(g_grid.size())) {
+        const auto& G = g_grid[layer];
+        if (G.cell > 0 && !G.buckets.empty()) {
+            query_layer_candidates_linear(layer, qbox, out);
+            return;
+        }
+    }
+
+    auto it = layerIndex.find(layer);
+    if (it != layerIndex.end()) {
+        std::vector<RTreeValue> candidates;
+        candidates.reserve(64);
+        it->second.query(bgi::intersects(qbox), std::back_inserter(candidates));
+        for (const auto& candidate : candidates) {
+            out.push_back(candidate.second);
+        }
+        return;
+    }
+
+    query_layer_candidates_linear(layer, qbox, out);
+}
+
+inline void build_per_layer_registry() {
+    int maxL = 0;
+    for (const auto& poly : polygons) {
+        if (poly.layer > maxL) {
+            maxL = poly.layer;
+        }
+    }
+    g_layerPolyIds.assign(maxL + 1, {});
+    for (int pid = 0; pid < (int)polygons.size(); ++pid) {
+        int L = polygons[pid].layer;
+        if (L >= 0) {
+            if (L >= (int)g_layerPolyIds.size()) {
+                g_layerPolyIds.resize(L + 1);
+            }
+            g_layerPolyIds[L].push_back(pid);
+        }
+    }
+}
+
+inline bool point_in_poly_manhattan(const PolygonInfo& P, int x, int y) {
+    const auto& V = P.vertices;
+    if (V.empty()) return false;
+
+    bool inside = false;
+    for (size_t i = 0, j = V.size() - 1; i < V.size(); j = i++) {
+        int xi = V[i].first, yi = V[i].second;
+        int xj = V[j].first, yj = V[j].second;
+
+        if ((y == yi && y == yj && ((x - xi) * (x - xj) <= 0)) ||
+            (x == xi && x == xj && ((y - yi) * (y - yj) <= 0))) {
+            return true;
+        }
+
+        bool intersect = ((yi > y) != (yj > y)) &&
+                         (x < (int64_t)(xj - xi) * (y - yi) / (int64_t)(yj - yi) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+inline int locate_seed_polygon_linear(int layerHint, int sx, int sy) {
+    auto find_in_layer = [&](int layer) -> int {
+        if (layer < 0 || layer >= (int)g_layerPolyIds.size()) return -1;
+        Box queryBox(Point(sx, sy), Point(sx, sy));
+        std::vector<int> cand;
+        cand.reserve(16);
+        query_layer_candidates(layer, queryBox, cand);
+
+        if (!cand.empty()) {
+            for (int pid : cand) {
+                const auto& poly = polygons[pid];
+                if (!point_in_bbox(poly.bbox, sx, sy)) continue;
+                if (point_in_poly_manhattan(poly, sx, sy)) return pid;
+            }
+        }
+
+        for (int pid : g_layerPolyIds[layer]) {
+            const auto& poly = polygons[pid];
+            if (!point_in_bbox(poly.bbox, sx, sy)) continue;
+            if (point_in_poly_manhattan(poly, sx, sy)) return pid;
+        }
+        return -1;
+    };
+
+    if (layerHint >= 0) {
+        int res = find_in_layer(layerHint);
+        if (res >= 0) return res;
+    }
+
+    for (int layer = 0; layer < (int)g_layerPolyIds.size(); ++layer) {
+        if (layer == layerHint) continue;
+        int res = find_in_layer(layer);
+        if (res >= 0) return res;
+    }
+
+    for (size_t idx = 0; idx < polygons.size(); ++idx) {
+        const auto& poly = polygons[idx];
+        if (!point_in_bbox(poly.bbox, sx, sy)) continue;
+        if (point_in_poly_manhattan(poly, sx, sy)) return static_cast<int>(idx);
+    }
+    return -1;
+}
+
+inline void expand_same_layer_on_demand(int layer, int pid, std::vector<int>& out) {
+    if (layer < 0) return;
+    const auto& P = polygons[pid];
+    std::vector<int> cand;
+    cand.reserve(64);
+    query_layer_candidates(layer, P.bbox, cand);
+
+    for (int qid : cand) {
+        if (qid == pid) continue;
+        if (polygons_intersect(pid, qid)) {
+            out.push_back(qid);
+        }
+    }
+}
+
+inline void expand_adjacent_layers_on_demand(int layer, int pid,
+                                             const std::vector<std::vector<int>>& layerNeighbors,
+                                             std::vector<std::pair<int,int>>& out) {
+    if (layer < 0 || layer >= (int)layerNeighbors.size()) return;
+    const auto& P = polygons[pid];
+    for (int L2 : layerNeighbors[layer]) {
+        if (L2 < 0) continue;
+        std::vector<int> cand;
+        cand.reserve(32);
+        query_layer_candidates(L2, P.bbox, cand);
+        for (int qid : cand) {
+            if (polygons_intersect(pid, qid)) {
+                out.emplace_back(L2, qid);
+            }
+        }
+    }
+}
+
+inline void expand_same_layer_s2(int layer, int uid, std::vector<int>& out, int aaLayer) {
+    if (layer < 0) return;
+    if (aaLayer >= 0 && layer == aaLayer) return;
+
+    const auto& U = polygons[uid];
+    std::vector<int> cand;
+    cand.reserve(64);
+    query_layer_candidates(layer, U.bbox, cand);
+    for (int vid : cand) {
+        if (vid == uid) continue;
+        if (polygons_intersect(uid, vid)) {
+            out.push_back(vid);
+        }
+    }
+}
+
+inline void expand_cross_layer_s2(int layer, int uid,
+                                  const std::vector<std::vector<int>>& layerNeighbors,
+                                  std::vector<std::pair<int,int>>& out,
+                                  const std::vector<uint8_t>& isHighPO,
+                                  int aaLayer, int poLayer) {
+    if (layer < 0 || layer >= (int)layerNeighbors.size()) return;
+
+    const auto& U = polygons[uid];
+
+    if (aaLayer >= 0 && layer == aaLayer && poLayer >= 0) {
+        std::vector<int> pocand;
+        pocand.reserve(64);
+        query_layer_candidates(poLayer, U.bbox, pocand);
+
+        std::vector<Box> stripes;
+        stripes.reserve(pocand.size());
+        for (int pid : pocand) {
+            Box stripe;
+            if (gate_passable(uid, pid, isHighPO, &stripe)) {
+                stripes.push_back(stripe);
+            }
+        }
+        if (stripes.empty()) {
+            return;
+        }
+
+        std::vector<int> cand;
+        cand.reserve(64);
+        for (int L2 : layerNeighbors[layer]) {
+            if (L2 < 0) continue;
+            cand.clear();
+            query_layer_candidates(L2, U.bbox, cand);
+            for (int vid : cand) {
+                if (vid == uid) continue;
+                if (!polygons_intersect(uid, vid)) continue;
+                const auto& V = polygons[vid];
+                bool ok = false;
+                for (const auto& stripe : stripes) {
+                    if (aabb_touch_or_overlap(V.bbox, stripe)) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (ok) {
+                    out.emplace_back(L2, vid);
+                }
+            }
+        }
+        return;
+    }
+
+    std::vector<int> cand;
+    cand.reserve(64);
+    for (int L2 : layerNeighbors[layer]) {
+        if (L2 < 0) continue;
+        cand.clear();
+        query_layer_candidates(L2, U.bbox, cand);
+        for (int vid : cand) {
+            if (vid == uid) continue;
+            if (polygons_intersect(uid, vid)) {
+                out.emplace_back(L2, vid);
+            }
+        }
+    }
+}
+
+struct Seed {
+    int x;
+    int y;
+    int layerHint;
+};
+
+struct RingQ {
+    std::vector<int> buf;
+    size_t head = 0;
+    size_t tail = 0;
+    size_t mask = 0;
+    explicit RingQ(size_t cap = 1u << 14) {
+        size_t c = 1;
+        while (c < cap) c <<= 1;
+        buf.resize(c);
+        mask = buf.size() - 1;
+    }
+    inline bool empty() const { return head == tail; }
+    inline size_t size() const { return tail - head; }
+    inline void grow() {
+        size_t current = size();
+        std::vector<int> next(buf.size() << 1);
+        for (size_t i = 0; i < current; ++i) {
+            next[i] = buf[(head + i) & mask];
+        }
+        buf.swap(next);
+        head = 0;
+        tail = current;
+        mask = buf.size() - 1;
+    }
+    inline void push(int v) {
+        if (size() == buf.size()) grow();
+        buf[tail & mask] = v;
+        ++tail;
+    }
+    inline int pop() {
+        int v = buf[head & mask];
+        ++head;
+        return v;
+    }
+};
+
+inline void build_layer_neighbor_table(const std::vector<std::vector<int>>& viaRules,
+                                       std::vector<std::vector<int>>& layerNeighbors) {
+    int maxLayer = 0;
+    for (const auto& poly : polygons) {
+        maxLayer = std::max(maxLayer, poly.layer);
+    }
+    for (const auto& rule : viaRules) {
+        for (int layer : rule) {
+            maxLayer = std::max(maxLayer, layer);
+        }
+    }
+    layerNeighbors.assign(maxLayer + 1, {});
+
+    for (const auto& rule : viaRules) {
+        for (size_t i = 0; i + 1 < rule.size(); ++i) {
+            int a = rule[i];
+            int b = rule[i + 1];
+            if (a < 0 || b < 0) continue;
+            layerNeighbors[a].push_back(b);
+            layerNeighbors[b].push_back(a);
+        }
+    }
+
+    for (auto& nbrs : layerNeighbors) {
+        std::sort(nbrs.begin(), nbrs.end());
+        nbrs.erase(std::unique(nbrs.begin(), nbrs.end()), nbrs.end());
+    }
+}
+
+bool bfs_from_s1_ondemand(const Seed& s1,
+                          int polyLayer,
+                          const std::vector<std::vector<int>>& layerNeighbors,
+                          std::vector<uint8_t>& isHighPO) {
+    PhaseStopwatch _(g_profile ? "[S1]" : nullptr, g_time_s1);
+    isHighPO.assign(polygons.size(), 0);
+    if (polygons.empty()) return false;
+
+    int startPid = locate_seed_polygon_linear(s1.layerHint, s1.x, s1.y);
+    if (startPid < 0) return false;
+
+    std::vector<uint8_t> visitedLocal(polygons.size(), 0);
+    RingQ q(polygons.size() + 16);
+    q.push(startPid);
+    visitedLocal[startPid] = 1;
+
+    auto mark_if_PO = [&](int pid) {
+        if (polyLayer != -1 && polygons[pid].layer == polyLayer) {
+            isHighPO[pid] = 1;
+        }
+    };
+
+    mark_if_PO(startPid);
+
+    std::vector<int> sameLayerNeighbors;
+    sameLayerNeighbors.reserve(128);
+    std::vector<std::pair<int,int>> crossLayerNeighbors;
+    crossLayerNeighbors.reserve(64);
+
+    while (!q.empty()) {
+        int u = q.pop();
+        int Lu = polygons[u].layer;
+
+        sameLayerNeighbors.clear();
+        expand_same_layer_on_demand(Lu, u, sameLayerNeighbors);
+        for (int v : sameLayerNeighbors) {
+            if (!visitedLocal[v]) {
+                visitedLocal[v] = 1;
+                q.push(v);
+                mark_if_PO(v);
+            }
+        }
+
+        crossLayerNeighbors.clear();
+        expand_adjacent_layers_on_demand(Lu, u, layerNeighbors, crossLayerNeighbors);
+        for (const auto& item : crossLayerNeighbors) {
+            int v = item.second;
+            if (!visitedLocal[v]) {
+                visitedLocal[v] = 1;
+                q.push(v);
+                mark_if_PO(v);
+            }
+        }
+    }
+    return true;
+}
+
+bool bfs_from_s2_with_gate_ondemand(const Seed& s2,
+                                    const std::vector<uint8_t>& isHighPO,
+                                    const std::vector<std::vector<int>>& layerNeighbors,
+                                    int polyLayer, int aaLayer,
+                                    std::vector<uint8_t>& aaReached,
+                                    std::vector<int>* visitedOut) {
+    PhaseStopwatch _(g_profile ? "[S2]" : nullptr, g_time_s2);
+    aaReached.assign(polygons.size(), 0);
+    if (visitedOut) visitedOut->clear();
+    if (polygons.empty()) return false;
+
+    int startPid = locate_seed_polygon_linear(s2.layerHint, s2.x, s2.y);
+    if (startPid < 0) return false;
+
+    std::vector<uint8_t> visitedLocal(polygons.size(), 0);
+    RingQ q(polygons.size() + 16);
+    q.push(startPid);
+    visitedLocal[startPid] = 1;
+
+    auto mark_if_AA = [&](int pid) {
+        if (aaLayer >= 0 && polygons[pid].layer == aaLayer) {
+            aaReached[pid] = 1;
+        }
+    };
+
+    mark_if_AA(startPid);
+
+    std::vector<int> sameLayerNeighbors;
+    sameLayerNeighbors.reserve(128);
+    std::vector<std::pair<int,int>> crossLayerNeighbors;
+    crossLayerNeighbors.reserve(128);
+
+    while (!q.empty()) {
+        int u = q.pop();
+
+        if (visitedOut) {
+            visitedOut->push_back(u);
+        }
+
+        int Lu = polygons[u].layer;
+
+        sameLayerNeighbors.clear();
+        expand_same_layer_s2(Lu, u, sameLayerNeighbors, aaLayer);
+        for (int v : sameLayerNeighbors) {
+            if (!visitedLocal[v]) {
+                visitedLocal[v] = 1;
+                q.push(v);
+                mark_if_AA(v);
+            }
+        }
+
+        crossLayerNeighbors.clear();
+        expand_cross_layer_s2(Lu, u, layerNeighbors, crossLayerNeighbors,
+                              isHighPO, aaLayer, polyLayer);
+        for (const auto& item : crossLayerNeighbors) {
+            int v = item.second;
+            if (!visitedLocal[v]) {
+                visitedLocal[v] = 1;
+                q.push(v);
+                mark_if_AA(v);
+            }
+        }
+    }
+
+    if (aaLayer >= 0) {
+        for (size_t i = 0; i < aaReached.size(); ++i) {
+            if (aaReached[i] && polygons[i].layer != aaLayer) {
+                aaReached[i] = 0;
+            }
+        }
+    } else {
+        std::fill(aaReached.begin(), aaReached.end(), 0);
+    }
+
+    return true;
 }
 
 // 输出结果
 bool write_result(const std::string& filename, const std::vector<PolygonInfo>& outputPolygons) {
-    std::ofstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "Error: Cannot open output file: " << filename << "\n";
-        return false;
-    }
-    
-    int numThreads = get_thread_count();
-    
-    // 按层分组
+    PhaseStopwatch _(g_profile ? "[Output]" : nullptr, g_time_output);
+
+    FastWriter writer(std::max<size_t>(outputPolygons.size() * 128ull, 1ull << 20));
+
     std::map<int, std::vector<const PolygonInfo*>> layerGroups;
     for (const auto& poly : outputPolygons) {
         layerGroups[poly.layer].push_back(&poly);
     }
-    
-    // 将layers转为vector以便并行处理
-    std::vector<std::pair<int, std::vector<const PolygonInfo*>>> layerVec(
-        layerGroups.begin(), layerGroups.end());
-    
-    // 并行格式化每个layer的字符串
-    std::vector<std::string> layerStrings(layerVec.size());
-    
-    #pragma omp parallel for schedule(dynamic, 1) if(numThreads > 1)
-    for (size_t i = 0; i < layerVec.size(); i++) {
-        int layerId = layerVec[i].first;
-        const auto& polys = layerVec[i].second;
-        
-        std::ostringstream oss;
-        oss.str().reserve(polys.size() * 100);
-        
-        oss << layerIdToName[layerId] << "\n";
-        
+
+    for (const auto& entry : layerGroups) {
+        int layerId = entry.first;
+        const auto& polys = entry.second;
+        auto itName = layerIdToName.find(layerId);
+        if (itName != layerIdToName.end()) {
+            writer.puts(itName->second);
+        } else {
+            writer.puti(layerId);
+        }
+        writer.nl();
+
         for (const auto* poly : polys) {
             const auto& vertices = poly->vertices;
-            
-            for (size_t j = 0; j < vertices.size(); j++) {
-                if (j > 0) oss << ",";
-                oss << "(" << vertices[j].first << "," << vertices[j].second << ")";
+            for (size_t j = 0; j < vertices.size(); ++j) {
+                if (j > 0) writer.put(',');
+                writer.put('(');
+                writer.puti(vertices[j].first);
+                writer.put(',');
+                writer.puti(vertices[j].second);
+                writer.put(')');
             }
-            oss << "\n";
+            writer.nl();
         }
-        
-        layerStrings[i] = oss.str();
     }
-    
-    // 串行合并输出（保持layer顺序）
-    for (const auto& str : layerStrings) {
-        file << str;
+
+    if (!writer.write_to_file(filename)) {
+        std::cerr << "Error: Cannot open output file: " << filename << "\n";
+        return false;
     }
-    
-    file.close();
     return true;
 }
 
@@ -700,7 +1867,7 @@ int solve(const std::vector<std::pair<int, std::pair<int, int>>>& startPoints) {
     std::cerr << "\n=== PROBLEM 1: Single-Layer, Single-Seed (On-Demand BFS) ===\n";
     
     // 初始化访问标记
-    visited.resize(polygons.size(), false);
+    visited.assign(polygons.size(), false);
     
     std::vector<PolygonInfo> outputPolygons;
     
@@ -729,12 +1896,10 @@ int solve(const std::vector<std::pair<int, std::pair<int, int>>>& startPoints) {
     }
     
     // 输出结果
-    auto t_output = Clock::now();
     if (!write_result(outputFile, outputPolygons)) {
         return 1;
     }
-    std::cerr << "⏱️  Output writing: " << elapsed_ms(t_output) << " ms\n";
-    
+
     return 0;
 }
 
@@ -1094,12 +2259,10 @@ int solve(const std::vector<std::pair<int, std::pair<int, int>>>& startPoints,
     }
     
     // 输出结果
-    auto t_output = Clock::now();
     if (!write_result(outputFile, outputPolygons)) {
         return 1;
     }
-    std::cerr << "⏱️  Output writing: " << elapsed_ms(t_output) << " ms\n";
-    
+
     return 0;
 }
 
@@ -1536,8 +2699,8 @@ std::vector<int> trace_connectivity_from_seed(int seedPolygon) {
     return region;
 }
 
-std::vector<int> trace_connectivity_from_seed_with_gate(int seedPolygon, 
-                                                         const std::vector<char>& isHighPoly) {
+std::vector<int> trace_connectivity_from_seed_with_gate(int seedPolygon,
+                                                         const std::vector<uint8_t>& isHighPO) {
     std::vector<int> region;
     std::queue<int> queue;
     
@@ -1562,7 +2725,7 @@ std::vector<int> trace_connectivity_from_seed_with_gate(int seedPolygon,
         
         if (cur < (int)gateAdjacency.size()) {
             for (const auto& edge : gateAdjacency[cur]) {
-                if (!visited[edge.to] && edge.polyId < (int)isHighPoly.size() && isHighPoly[edge.polyId]) {
+                if (!visited[edge.to] && edge.polyId < (int)isHighPO.size() && isHighPO[edge.polyId]) {
                     visited[edge.to] = true;
                     queue.push(edge.to);
                 }
@@ -1577,124 +2740,198 @@ int solve(const std::vector<std::pair<int, std::pair<int, int>>>& startPoints,
           const std::vector<std::vector<int>>& viaRules,
           int polyLayer, int aaLayer) {
     std::cerr << "\n=== PROBLEM 3: Gate Rule Processing (Full Pipeline) ===\n";
-    std::cerr << "Gate rule: Poly=" << layerIdToName[polyLayer] 
+    std::cerr << "Gate rule: Poly=" << layerIdToName[polyLayer]
               << " AA=" << layerIdToName[aaLayer] << "\n";
-    
-    // 构建初始图
-    auto t_build_graph = Clock::now();
-    build_connectivity_graph(viaRules);
-    std::cerr << "⏱️  Initial graph building: " << elapsed_ms(t_build_graph) << " ms\n";
-    
-    // 保存预切片前的AA层多边形ID
-    std::unordered_set<int> oldAAPolygonIds(
-        layerPolygons[aaLayer].begin(),
-        layerPolygons[aaLayer].end()
-    );
-        
-        // 预切片
-    auto t_preslice = Clock::now();
-        preslice_aa_by_poly(polyLayer, aaLayer);
-    std::cerr << "⏱️  Pre-slicing AA: " << elapsed_ms(t_preslice) << " ms\n";
-    
-    // 增量重建
-    auto t_rebuild = Clock::now();
-    rebuild_layer_connections_incremental(aaLayer, viaRules, oldAAPolygonIds);
-    std::cerr << "⏱️  Rebuilding graph (incremental): " << elapsed_ms(t_rebuild) << " ms\n";
-        
-        // 构建Gate边
-    auto t_gate = Clock::now();
-    build_gate_edges_fast(polyLayer, aaLayer);
-    std::cerr << "⏱️  Building Gate edges: " << elapsed_ms(t_gate) << " ms\n";
-    
-    // 初始化访问标记
-    visited.resize(polygons.size(), false);
-    
-    std::vector<PolygonInfo> outputPolygons;
-    
-    // 双种子Gate追踪
-    if (startPoints.size() == 2) {
+
+    bool graphBuilt = false;
+    std::vector<uint8_t> isHighPO;
+
+    bool twoSeeds = (startPoints.size() == 2);
+    bool useOnDemandS2 = twoSeeds && g_s2bfs;
+
+    std::vector<std::vector<int>> layerNeighbors;
+    if ((twoSeeds && g_s1bfs) || useOnDemandS2) {
+        build_layer_neighbor_table(viaRules, layerNeighbors);
+    }
+
+    if (twoSeeds) {
         std::cerr << "Two-seed Gate tracing mode\n";
-        
-        // 第一个起点：获取高电平Poly集合
+
         int s1Layer = startPoints[0].first;
         int s1x = startPoints[0].second.first;
         int s1y = startPoints[0].second.second;
-        
-        int seed1Polygon = find_polygon_at(s1Layer, s1x, s1y);
-        if (seed1Polygon < 0) {
-            std::cerr << "Error: Start point 1 not found\n";
-            return 1;
-        }
-        
-        std::vector<int> s1Region = trace_connectivity_from_seed(seed1Polygon);
-        
-        std::vector<char> isHighPoly(polygons.size(), 0);
-        int highPolyCount = 0;
-        
-        for (int id : s1Region) {
-            if (polygons[id].layer == polyLayer) {
-                isHighPoly[id] = 1;
-                highPolyCount++;
+
+        if (g_s1bfs) {
+            Seed s1Seed{ s1x, s1y, s1Layer };
+            if (!bfs_from_s1_ondemand(s1Seed, polyLayer, layerNeighbors, isHighPO)) {
+                std::cerr << "Error: Start point 1 not found\n";
+                return 1;
             }
+
+            int highPolyCount = 0;
+            for (uint8_t flag : isHighPO) {
+                if (flag) highPolyCount++;
+            }
+            std::cerr << "High-level Poly count: " << highPolyCount << "\n";
+        } else {
+            auto t_build_graph = Clock::now();
+            build_connectivity_graph(viaRules);
+            std::cerr << "⏱️  Initial graph building: " << elapsed_ms(t_build_graph) << " ms\n";
+            graphBuilt = true;
+
+            visited.assign(polygons.size(), false);
+            int seed1Polygon = find_polygon_at(s1Layer, s1x, s1y);
+            if (seed1Polygon < 0) {
+                std::cerr << "Error: Start point 1 not found\n";
+                return 1;
+            }
+
+            std::vector<int> s1Region = trace_connectivity_from_seed(seed1Polygon);
+
+            isHighPO.assign(polygons.size(), 0);
+            int highPolyCount = 0;
+            for (int id : s1Region) {
+                if (polygons[id].layer == polyLayer) {
+                    isHighPO[id] = 1;
+                    highPolyCount++;
+                }
+            }
+
+            std::cerr << "High-level Poly count: " << highPolyCount << "\n";
         }
-        
-        std::cerr << "High-level Poly count: " << highPolyCount << "\n";
-        
-        // 重置visited
+
         visited.assign(polygons.size(), false);
-        
-        // 第二个起点：Gate-aware BFS
+    } else {
+        auto t_build_graph = Clock::now();
+        build_connectivity_graph(viaRules);
+        std::cerr << "⏱️  Initial graph building: " << elapsed_ms(t_build_graph) << " ms\n";
+        graphBuilt = true;
+    }
+
+    if (!graphBuilt && !useOnDemandS2) {
+        auto t_build_graph = Clock::now();
+        build_connectivity_graph(viaRules);
+        std::cerr << "⏱️  Initial graph building: " << elapsed_ms(t_build_graph) << " ms\n";
+        graphBuilt = true;
+    }
+
+    std::vector<uint8_t> aaReached;
+    std::vector<PolygonInfo> outputPolygons;
+
+    if (twoSeeds && useOnDemandS2) {
         int s2Layer = startPoints[1].first;
         int s2x = startPoints[1].second.first;
         int s2y = startPoints[1].second.second;
-        
-        int seed2Polygon = find_polygon_at(s2Layer, s2x, s2y);
-        if (seed2Polygon < 0) {
+
+        Seed s2Seed{ s2x, s2y, s2Layer };
+        std::vector<int> s2Region;
+        if (!bfs_from_s2_with_gate_ondemand(s2Seed, isHighPO, layerNeighbors,
+                                            polyLayer, aaLayer, aaReached, &s2Region)) {
             std::cerr << "Error: Start point 2 not found\n";
             return 1;
         }
-        
-        auto t_bfs = Clock::now();
-        std::vector<int> s2Region = trace_connectivity_from_seed_with_gate(seed2Polygon, isHighPoly);
-        std::cerr << "⏱️  Gate-aware BFS: " << elapsed_ms(t_bfs) << " ms\n";
         std::cerr << "S2 region size: " << s2Region.size() << "\n";
-        
-        for (int id : s2Region) {
-            if (id >= 0 && id < (int)polygons.size()) {
-                outputPolygons.push_back(polygons[id]);
+
+        std::unordered_set<int> aaCutSet;
+        std::vector<PolygonInfo> slicedPieces;
+
+        if (g_slice_enable && aaLayer >= 0 && polyLayer >= 0) {
+            PhaseStopwatch sliceTimer(g_profile ? "[Slice]" : nullptr, g_time_slice);
+            auto tasks = collect_slice_tasks(aaReached, isHighPO, aaLayer, polyLayer);
+            if (!tasks.empty()) {
+                auto slicedAA = run_slicing_parallel(tasks);
+                aaCutSet.reserve(tasks.size());
+                for (const auto& task : tasks) {
+                    aaCutSet.insert(task.aaId);
+                }
+                slicedPieces.reserve(slicedAA.size());
+                for (const auto& piece : slicedAA) {
+                    slicedPieces.push_back(make_polygoninfo_from_outpoly(piece));
+                }
             }
         }
-    } else {
-        // 普通模式
-        for (const auto& sp : startPoints) {
-            int seedLayer = sp.first;
-            int sx = sp.second.first;
-            int sy = sp.second.second;
-            
-            int seedPolygon = find_polygon_at(seedLayer, sx, sy);
-            
-            if (seedPolygon < 0) {
-                std::cerr << "Warning: Start point not found\n";
+
+        for (int id : s2Region) {
+            if (id < 0 || id >= (int)polygons.size()) continue;
+            const auto& poly = polygons[id];
+            if (g_slice_enable && aaLayer >= 0 && polyLayer >= 0 &&
+                poly.layer == aaLayer && aaCutSet.find(id) != aaCutSet.end()) {
                 continue;
             }
-            
-            std::vector<int> region = trace_connectivity_from_seed(seedPolygon);
-            
-            for (int id : region) {
+            outputPolygons.push_back(poly);
+        }
+
+        if (!slicedPieces.empty()) {
+            outputPolygons.insert(outputPolygons.end(),
+                                  std::make_move_iterator(slicedPieces.begin()),
+                                  std::make_move_iterator(slicedPieces.end()));
+        }
+    } else {
+        if (!useOnDemandS2) {
+            std::unordered_set<int> oldAAPolygonIds;
+            if (aaLayer != -1) {
+                auto itAA = layerPolygons.find(aaLayer);
+                if (itAA != layerPolygons.end()) {
+                    oldAAPolygonIds.insert(itAA->second.begin(), itAA->second.end());
+                }
+            }
+
+            preslice_aa_by_poly(polyLayer, aaLayer);
+
+            rebuild_layer_connections_incremental(aaLayer, viaRules, oldAAPolygonIds);
+
+            build_gate_edges_fast(polyLayer, aaLayer);
+
+            visited.resize(polygons.size(), false);
+        }
+
+        if (twoSeeds) {
+            int s2Layer = startPoints[1].first;
+            int s2x = startPoints[1].second.first;
+            int s2y = startPoints[1].second.second;
+
+            int seed2Polygon = find_polygon_at(s2Layer, s2x, s2y);
+            if (seed2Polygon < 0) {
+                std::cerr << "Error: Start point 2 not found\n";
+                return 1;
+            }
+
+            std::vector<int> s2Region = trace_connectivity_from_seed_with_gate(seed2Polygon, isHighPO);
+            std::cerr << "S2 region size: " << s2Region.size() << "\n";
+
+            for (int id : s2Region) {
                 if (id >= 0 && id < (int)polygons.size()) {
                     outputPolygons.push_back(polygons[id]);
                 }
             }
+        } else {
+            for (const auto& sp : startPoints) {
+                int seedLayer = sp.first;
+                int sx = sp.second.first;
+                int sy = sp.second.second;
+
+                int seedPolygon = find_polygon_at(seedLayer, sx, sy);
+
+                if (seedPolygon < 0) {
+                    std::cerr << "Warning: Start point not found\n";
+                    continue;
+                }
+
+                std::vector<int> region = trace_connectivity_from_seed(seedPolygon);
+
+                for (int id : region) {
+                    if (id >= 0 && id < (int)polygons.size()) {
+                        outputPolygons.push_back(polygons[id]);
+                    }
+                }
+            }
         }
     }
-    
-    // 输出结果
-    auto t_output = Clock::now();
+
     if (!write_result(outputFile, outputPolygons)) {
         return 1;
     }
-    std::cerr << "⏱️  Output writing: " << elapsed_ms(t_output) << " ms\n";
-    
+
     return 0;
 }
 
@@ -1702,24 +2939,31 @@ int solve(const std::vector<std::pair<int, std::pair<int, int>>>& startPoints,
 
 // ==================== Main函数：问题类型识别与分发 ====================
 int main(int argc, char* argv[]) {
-    auto t_total = Clock::now();
     
     // 解析命令行参数
     if (!parseCommandLine(argc, argv)) {
         return 1;
     }
-    
-    // 解析规则文件
-    auto t_parse_rule = Clock::now();
+
+    if (g_profile) {
+        g_time_parse = g_time_pre = g_time_s1 = g_time_s2 = g_time_slice = g_time_output = 0.0;
+    }
+
+    // 解析规则与版图文件
     std::vector<std::pair<int, std::pair<int, int>>> startPoints;
     std::vector<std::vector<int>> viaRules;
     int polyLayer, aaLayer;
-    
-    if (!parse_rule_file(ruleFile, startPoints, viaRules, polyLayer, aaLayer)) {
-        return 1;
+
+    {
+        PhaseStopwatch _(g_profile ? "[Parse]" : nullptr, g_time_parse);
+        if (!parse_rule_file(ruleFile, startPoints, viaRules, polyLayer, aaLayer)) {
+            return 1;
+        }
+        if (!parse_layout_file(layoutFile)) {
+            return 1;
+        }
     }
-    std::cerr << "⏱️  Rule parsing: " << elapsed_ms(t_parse_rule) << " ms\n";
-    
+
     std::cerr << "Via rules parsed:\n";
     for (size_t i = 0; i < viaRules.size(); i++) {
         std::cerr << "  Via" << (i+1) << ": ";
@@ -1729,14 +2973,13 @@ int main(int argc, char* argv[]) {
         }
         std::cerr << "\n";
     }
-    
-    // 解析版图文件
-    auto t_parse_layout = Clock::now();
-    if (!parse_layout_file(layoutFile)) {
-        return 1;
+
+    {
+        PhaseStopwatch _(g_profile ? "[Preprocess]" : nullptr, g_time_pre);
+        build_per_layer_registry();
+        build_uniform_grid_indices();
     }
-    std::cerr << "⏱️  Layout parsing: " << elapsed_ms(t_parse_layout) << " ms\n";
-    
+
     std::cerr << "Polygons by layer after parsing:\n";
     for (const auto& p : layerPolygons) {
         std::cerr << "  " << layerIdToName[p.first] << ": " << p.second.size() << " polygons\n";
@@ -1785,10 +3028,22 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: Solver returned error code " << result << "\n";
         return result;
     }
-    
-    std::cerr << "\n⏱️  ========== TOTAL TIME: " << elapsed_ms(t_total) << " ms ==========\n";
+
+    if (g_profile) {
+        double total = g_time_parse + g_time_pre + g_time_s1 + g_time_s2 + g_time_slice + g_time_output;
+        std::cerr.setf(std::ios::fixed);
+        std::cerr.precision(3);
+        std::cerr << "[TIME] parse=" << g_time_parse
+                  << "s pre=" << g_time_pre
+                  << "s s1=" << g_time_s1
+                  << "s s2=" << g_time_s2
+                  << "s slice=" << g_time_slice
+                  << "s out=" << g_time_output
+                  << "s total=" << total << "s\n";
+    }
+
     std::cerr << "Result written to " << outputFile << "\n";
-    
+
     return 0;
 }
 
