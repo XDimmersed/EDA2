@@ -1,3 +1,0 @@
-/root/autodl-tmp/EDA/build/CMakeFiles/trace.dir
-/root/autodl-tmp/EDA/build/CMakeFiles/edit_cache.dir
-/root/autodl-tmp/EDA/build/CMakeFiles/rebuild_cache.dir
